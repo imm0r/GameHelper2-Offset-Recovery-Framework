@@ -8,7 +8,9 @@ This folder contains Ghidra-only helpers for recovering static offsets after gam
 2. Add this `GameHelper2 Offset Recovery Framework` folder as a Script Manager directory.
 3. Run `OffsetRecoveryFramework.java`.
 
-The script prints the best candidate for each offset, confidence, raw pattern data, and a final summary. High-confidence results also receive bookmarks and labels in the Ghidra database.
+Validated with Ghidra 12.1. Keep archived or comparison copies outside this script folder, or give them a non-`.java` extension, because Ghidra compiles every Java file in the bundle.
+
+The script prints the best candidate for each offset, confidence, unique output pattern data, and a final summary. High-confidence results also receive bookmarks and labels in the Ghidra database.
 
 Set `VERBOSE = true` in `OffsetRecoveryFramework.java` to print score reasons and validation notes while debugging recipes.
 
@@ -23,7 +25,7 @@ Set `VERBOSE = true` in `OffsetRecoveryFramework.java` to print score reasons an
 
 ## Recipe model
 
-Most recipes start from one or more anchor strings, follow XREFs and call chains, then scan Ghidra instructions for a RIP-relative static reference. Some recipes, such as `Terrain Rotator Helper` and `GameCullSize`, use function-shape detection instead of a string anchor. The best candidate is scored with local validation rules such as proximity, expected instruction shape, XREF count, uniqueness, and semantic context.
+Most recipes start from one or more anchor strings, follow XREFs and call chains, then scan Ghidra instructions for a RIP-relative static reference. Some recipes, such as `Terrain Rotator Helper` and `GameCullSize`, use function-shape detection instead of a string anchor. After a semantic hook finds a candidate, the framework builds a SigMaker-style output pattern by wildcarding RIP-relative displacement bytes and extending across instruction boundaries until the pattern is unique in executable memory.
 
 For simple offsets, use `AnchorRecipeBuilder`. For complex offsets, add a custom `OffsetRecipe` implementation.
 
