@@ -126,13 +126,10 @@ public class OffsetRecoveryFramework extends GhidraScript {
             return;
         }
 
-        int minimumLength = parsePattern(result.match.outputPattern).bytes.length;
-        UniquePattern uniquePattern = makeUniquePattern(
-            result.match.matchAddress,
-            minimumLength,
-            result.match.bytesToSkip
-        );
+        UniquePattern uniquePattern = makeBestUniquePattern(result.match);
+        result.match.matchAddress = uniquePattern.start;
         result.match.outputPattern = uniquePattern.pattern;
+        result.match.bytesToSkip = uniquePattern.bytesToSkip;
         result.match.patternMatchCount = uniquePattern.matchCount;
         result.validations.add("SigMaker pass ran on selected candidate only");
         if (uniquePattern.matchCount == 1) {
@@ -142,6 +139,71 @@ public class OffsetRecoveryFramework extends GhidraScript {
         else {
             result.score = 0;
             result.validations.add("output pattern match count: " + uniquePattern.matchCount);
+        }
+    }
+
+    private UniquePattern makeBestUniquePattern(OffsetMatch match) throws MemoryAccessException {
+        int minimumLength = parsePattern(match.outputPattern).bytes.length;
+        int originalInstructionOffset = (int)match.instructionAddress.subtract(match.matchAddress);
+        int displacementOffsetInInstruction = match.bytesToSkip - originalInstructionOffset;
+        int originalTailLength = minimumLength - originalInstructionOffset;
+
+        UniquePattern best = null;
+        for (Address start : uniquePatternStartCandidates(match)) {
+            if (start == null || start.compareTo(match.instructionAddress) > 0) {
+                continue;
+            }
+
+            int instructionOffset = (int)match.instructionAddress.subtract(start);
+            int bytesToSkip = instructionOffset + displacementOffsetInInstruction;
+            int candidateMinimumLength = Math.max(instructionOffset + originalTailLength, bytesToSkip + 4);
+            if (bytesToSkip < 0 || candidateMinimumLength > MAX_UNIQUE_PATTERN_BYTES) {
+                continue;
+            }
+
+            UniquePattern candidate = makeUniquePattern(start, candidateMinimumLength, bytesToSkip);
+            if (best == null || candidate.isBetterThan(best)) {
+                best = candidate;
+            }
+            if (candidate.matchCount == 1 && candidate.byteLength <= minimumLength) {
+                return candidate;
+            }
+        }
+
+        if (best != null) {
+            return best;
+        }
+        return makeUniquePattern(match.matchAddress, minimumLength, match.bytesToSkip);
+    }
+
+    private List<Address> uniquePatternStartCandidates(OffsetMatch match) {
+        List<Address> starts = new ArrayList<>();
+        Set<Address> seen = new HashSet<>();
+        addUniqueStart(starts, seen, match.matchAddress);
+        addUniqueStart(starts, seen, match.instructionAddress);
+
+        Function function = getFunctionContaining(match.instructionAddress);
+        Instruction instruction = getInstructionBefore(match.instructionAddress);
+        int count = 0;
+        while (instruction != null
+            && count < 16
+            && match.instructionAddress.subtract(instruction.getAddress()) <= 0x60
+            && (function == null || function.getBody().contains(instruction.getAddress()))) {
+            addUniqueStart(starts, seen, instruction.getAddress());
+            instruction = getInstructionBefore(instruction);
+            count++;
+        }
+
+        if (function != null && hasInstructionBody(function)) {
+            addUniqueStart(starts, seen, function.getEntryPoint());
+        }
+        return starts;
+    }
+
+    private void addUniqueStart(List<Address> starts, Set<Address> seen, Address address) {
+        if (address != null && !seen.contains(address)) {
+            starts.add(address);
+            seen.add(address);
         }
     }
 
@@ -416,6 +478,9 @@ public class OffsetRecoveryFramework extends GhidraScript {
 
             boolean hasTlsInitContext = hasThreadLocalSetupNearEntry(function)
                 && address.subtract(function.getEntryPoint()) < 0x80;
+            if (!hasTlsInitContext) {
+                continue;
+            }
             return ripRelativeMatch(
                 address,
                 instruction,
@@ -562,7 +627,14 @@ public class OffsetRecoveryFramework extends GhidraScript {
             String pattern = ripPattern(start, length, bytesToSkip, 4);
             PatternBytes parsed = parsePattern(pattern);
             int matchCount = countExecutableMatches(parsed, 2);
-            UniquePattern candidate = new UniquePattern(pattern, matchCount);
+            UniquePattern candidate = new UniquePattern(
+                pattern,
+                matchCount,
+                start,
+                bytesToSkip,
+                parsed.bytes.length,
+                parsed.fixedByteCount
+            );
             if (best == null || candidate.isBetterThan(best)) {
                 best = candidate;
             }
@@ -582,7 +654,15 @@ public class OffsetRecoveryFramework extends GhidraScript {
         }
 
         String pattern = ripPattern(start, minimumLength, bytesToSkip, 4);
-        return new UniquePattern(pattern, countExecutableMatches(parsePattern(pattern), 2));
+        PatternBytes parsed = parsePattern(pattern);
+        return new UniquePattern(
+            pattern,
+            countExecutableMatches(parsed, 2),
+            start,
+            bytesToSkip,
+            parsed.bytes.length,
+            parsed.fixedByteCount
+        );
     }
 
     private int alignPatternLengthToInstruction(Address start, int minimumLength, Function function) {
@@ -650,7 +730,7 @@ public class OffsetRecoveryFramework extends GhidraScript {
             && instruction.getAddress().compareTo(start) >= 0) {
             for (Reference reference : getReferencesFrom(instruction.getAddress())) {
                 Address toAddress = reference.getToAddress();
-                if (reference.isMemoryReference()
+                if (isRelocatableReference(reference)
                     && toAddress != null
                     && currentProgram.getMemory().contains(toAddress)) {
                     markDisplacementBytes(start, instruction, toAddress, wildcard);
@@ -658,6 +738,15 @@ public class OffsetRecoveryFramework extends GhidraScript {
             }
             instruction = getInstructionAfter(instruction);
         }
+    }
+
+    private boolean isRelocatableReference(Reference reference) {
+        if (reference.isMemoryReference()) {
+            return true;
+        }
+
+        RefType type = reference.getReferenceType();
+        return type.isCall() || type.isJump() || type.isFlow();
     }
 
     private void markDisplacementBytes(Address patternStart, Instruction instruction, Address target, boolean[] wildcard)
@@ -708,41 +797,44 @@ public class OffsetRecoveryFramework extends GhidraScript {
         }
 
         int count = 0;
+        byte[] searchMask = searchMask(pattern.mask);
         for (MemoryBlock block : currentProgram.getMemory().getBlocks()) {
             if (!block.isExecute() || !block.isInitialized() || block.getSize() < pattern.bytes.length) {
                 continue;
             }
 
-            Address start = block.getStart();
-            long maxOffset = block.getSize() - pattern.bytes.length;
-            for (long offset = 0; offset <= maxOffset && !monitor.isCancelled(); offset++) {
-                Address address = start.add(offset);
-                if (getByte(address.add(pattern.firstMaskedIndex)) != pattern.bytes[pattern.firstMaskedIndex]) {
-                    continue;
+            Address cursor = block.getStart();
+            Address lastStart = block.getStart().add(block.getSize() - pattern.bytes.length);
+            while (cursor.compareTo(lastStart) <= 0 && !monitor.isCancelled()) {
+                Address found = currentProgram.getMemory().findBytes(
+                    cursor,
+                    block.getEnd(),
+                    pattern.bytes,
+                    searchMask,
+                    true,
+                    monitor
+                );
+                if (found == null || found.compareTo(lastStart) > 0) {
+                    break;
                 }
-                if (matchesPattern(address, pattern)) {
-                    count++;
-                    if (count >= stopAfter) {
-                        return count;
-                    }
+                count++;
+                if (count >= stopAfter) {
+                    return count;
                 }
+                cursor = found.add(1);
             }
         }
         return count;
     }
 
-    private boolean matchesPattern(Address address, PatternBytes pattern) {
-        try {
-            for (int i = 0; i < pattern.bytes.length; i++) {
-                if (pattern.mask[i] && getByte(address.add(i)) != pattern.bytes[i]) {
-                    return false;
-                }
+    private byte[] searchMask(boolean[] fixedBytes) {
+        byte[] mask = new byte[fixedBytes.length];
+        for (int i = 0; i < fixedBytes.length; i++) {
+            if (fixedBytes[i]) {
+                mask[i] = (byte)0xff;
             }
-            return true;
         }
-        catch (Exception e) {
-            return false;
-        }
+        return mask;
     }
 
     private Address firstMemoryReferenceFrom(Instruction instruction) {
@@ -1648,17 +1740,29 @@ public class OffsetRecoveryFramework extends GhidraScript {
     private static class UniquePattern {
         final String pattern;
         final int matchCount;
+        final Address start;
+        final int bytesToSkip;
+        final int byteLength;
+        final int fixedByteCount;
 
-        UniquePattern(String pattern, int matchCount) {
+        UniquePattern(String pattern, int matchCount, Address start, int bytesToSkip, int byteLength,
+                int fixedByteCount) {
             this.pattern = pattern;
             this.matchCount = matchCount;
+            this.start = start;
+            this.bytesToSkip = bytesToSkip;
+            this.byteLength = byteLength;
+            this.fixedByteCount = fixedByteCount;
         }
 
         boolean isBetterThan(UniquePattern other) {
             if (matchCount != other.matchCount) {
                 return matchCount < other.matchCount;
             }
-            return pattern.length() < other.pattern.length();
+            if (byteLength != other.byteLength) {
+                return byteLength < other.byteLength;
+            }
+            return fixedByteCount > other.fixedByteCount;
         }
     }
 
@@ -1666,27 +1770,32 @@ public class OffsetRecoveryFramework extends GhidraScript {
         final byte[] bytes;
         final boolean[] mask;
         final int firstMaskedIndex;
+        final int fixedByteCount;
 
         PatternBytes(byte[] bytes, boolean[] mask) {
             this.bytes = bytes;
             this.mask = mask;
             int first = -1;
+            int fixed = 0;
             for (int i = 0; i < mask.length; i++) {
                 if (mask[i]) {
-                    first = i;
-                    break;
+                    fixed++;
+                    if (first < 0) {
+                        first = i;
+                    }
                 }
             }
             this.firstMaskedIndex = first;
+            this.fixedByteCount = fixed;
         }
     }
 
     private static class OffsetMatch {
-        final Address matchAddress;
+        Address matchAddress;
         final Address instructionAddress;
         final Address resolvedAddress;
         String outputPattern;
-        final int bytesToSkip;
+        int bytesToSkip;
         final String matchKind;
         int patternMatchCount;
         final Set<String> traits;
