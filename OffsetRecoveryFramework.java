@@ -71,6 +71,14 @@ public class OffsetRecoveryFramework extends GhidraScript {
             }
 
             RecoveryResult best = candidates.get(0);
+            finalizeOutputPattern(best);
+            if (best.match.patternMatchCount != 1) {
+                String reason = "output pattern is not unique in executable memory; matches="
+                    + best.match.patternMatchCount;
+                println("FAILED: " + reason);
+                summary.addFailure(recipe.name(), reason);
+                return;
+            }
             printResult(best);
             annotate(best);
             summary.addSuccess(best, candidates.size());
@@ -110,6 +118,30 @@ public class OffsetRecoveryFramework extends GhidraScript {
         if (VERBOSE) {
             printList("Score reasons", result.scoreReasons);
             printList("Validations", result.validations);
+        }
+    }
+
+    private void finalizeOutputPattern(RecoveryResult result) throws MemoryAccessException {
+        if (result.match.patternMatchCount == 1) {
+            return;
+        }
+
+        int minimumLength = parsePattern(result.match.outputPattern).bytes.length;
+        UniquePattern uniquePattern = makeUniquePattern(
+            result.match.matchAddress,
+            minimumLength,
+            result.match.bytesToSkip
+        );
+        result.match.outputPattern = uniquePattern.pattern;
+        result.match.patternMatchCount = uniquePattern.matchCount;
+        result.validations.add("SigMaker pass ran on selected candidate only");
+        if (uniquePattern.matchCount == 1) {
+            result.score = Math.min(100, result.score + 5);
+            result.validations.add("output pattern is unique in executable memory");
+        }
+        else {
+            result.score = 0;
+            result.validations.add("output pattern match count: " + uniquePattern.matchCount);
         }
     }
 
@@ -495,15 +527,14 @@ public class OffsetRecoveryFramework extends GhidraScript {
         }
 
         int bytesToSkip = (int)instructionAddress.subtract(matchStart) + displacementOffset;
-        UniquePattern uniquePattern = makeUniquePattern(matchStart, patternLength, bytesToSkip);
         return new OffsetMatch(
             matchStart,
             instructionAddress,
             resolved,
-            uniquePattern.pattern,
+            ripPattern(matchStart, patternLength, bytesToSkip, 4),
             bytesToSkip,
             matchKind,
-            uniquePattern.matchCount,
+            0,
             traits
         );
     }
@@ -1591,7 +1622,7 @@ public class OffsetRecoveryFramework extends GhidraScript {
         final Function sourceFunction;
         final int callDepth;
         final OffsetMatch match;
-        final int score;
+        int score;
         final List<String> scoreReasons;
         final List<String> validations;
 
@@ -1654,10 +1685,10 @@ public class OffsetRecoveryFramework extends GhidraScript {
         final Address matchAddress;
         final Address instructionAddress;
         final Address resolvedAddress;
-        final String outputPattern;
+        String outputPattern;
         final int bytesToSkip;
         final String matchKind;
-        final int patternMatchCount;
+        int patternMatchCount;
         final Set<String> traits;
 
         OffsetMatch(Address matchAddress, Address instructionAddress, Address resolvedAddress,

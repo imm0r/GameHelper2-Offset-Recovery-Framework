@@ -25,7 +25,7 @@ Set `VERBOSE = true` in `OffsetRecoveryFramework.java` to print score reasons an
 
 ## Recipe model
 
-Most recipes start from one or more anchor strings, follow XREFs and call chains, then scan Ghidra instructions for a RIP-relative static reference. Some recipes, such as `Terrain Rotator Helper` and `GameCullSize`, use function-shape detection instead of a string anchor. After a semantic hook finds a candidate, the framework builds a SigMaker-style output pattern by wildcarding RIP-relative displacement bytes and extending across instruction boundaries until the pattern is unique in executable memory.
+Most recipes start from one or more anchor strings, follow XREFs and call chains, then scan Ghidra instructions for a RIP-relative static reference. Some recipes, such as `Terrain Rotator Helper` and `GameCullSize`, use function-shape detection instead of a string anchor. After semantic hooks select the best candidate for an offset, the framework runs one SigMaker-style pass for that result by wildcarding RIP-relative displacement bytes and extending across instruction boundaries until the pattern is unique in executable memory. A result is valid only when the final output pattern has exactly one executable-memory match.
 
 For simple offsets, use `AnchorRecipeBuilder`. For complex offsets, add a custom `OffsetRecipe` implementation.
 
