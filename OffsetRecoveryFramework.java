@@ -1,4 +1,5 @@
 // Ghidra script: recover update-prone static offsets from semantic recipes.
+// @category GameHelper2
 // @author Arsenic
 
 import ghidra.app.script.GhidraScript;
@@ -43,7 +44,10 @@ public class OffsetRecoveryFramework extends GhidraScript {
         for (OffsetRecipe recipe : Arrays.asList(
             new GameStatesRecipe(),
             new FileRootRecipe(),
-            new AreaChangeCounterRecipe()
+            new AreaChangeCounterRecipe(),
+            new TerrainRotatorHelperRecipe(),
+            new TerrainRotationSelectorRecipe(),
+            new GameCullSizeRecipe()
         )) {
             runRecipe(recipe);
             println("");
@@ -93,12 +97,11 @@ public class OffsetRecoveryFramework extends GhidraScript {
         if (result.callDepth >= 0) {
             println("Call depth          : " + result.callDepth);
         }
-        println("Pattern start       : " + result.match.patternAddress);
-        println("Target instruction  : " + result.match.instructionAddress + "  " + result.match.instructionKind);
+        println("Match start         : " + result.match.matchAddress);
+        println("Target instruction  : " + result.match.instructionAddress + "  " + result.match.matchKind);
         println("Resolved address    : " + result.match.resolvedAddress);
-        println("Pattern             : " + result.match.pattern);
+        println("Output pattern      : " + result.match.outputPattern);
         println("BytesToSkip         : " + result.match.bytesToSkip);
-        println("Expected            : " + result.expectedStatus);
         println("Confidence          : " + confidenceLabel(result.score) + " (" + result.score + "/100)");
 
         if (VERBOSE) {
@@ -126,7 +129,7 @@ public class OffsetRecoveryFramework extends GhidraScript {
 
     private void annotate(RecoveryResult result) {
         String comment = "Recovered " + result.offsetName + " candidate: "
-            + result.match.resolvedAddress + " via " + result.match.instructionKind + ".";
+            + result.match.resolvedAddress + " via " + result.match.matchKind + ".";
 
         setEOLComment(result.match.instructionAddress, comment);
         createBookmark(result.anchor.address, BookmarkType.ANALYSIS,
@@ -286,6 +289,20 @@ public class OffsetRecoveryFramework extends GhidraScript {
         return -1;
     }
 
+    private int callerCount(Function function) {
+        if (function == null) {
+            return 0;
+        }
+
+        int count = 0;
+        for (Reference reference : getReferencesTo(function.getEntryPoint())) {
+            if (reference.getReferenceType().isCall()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private List<Instruction> instructionsInWindow(Function function, Address start, int maxBytes) {
         List<Instruction> result = new ArrayList<>();
         if (!hasInstructionBody(function) || start == null) {
@@ -330,89 +347,395 @@ public class OffsetRecoveryFramework extends GhidraScript {
             && !function.getBody().isEmpty();
     }
 
-    private PatternMatch findStaticQwordNullCheck(Function function) throws Exception {
+    private OffsetMatch findStaticQwordNullCheck(Function function) throws Exception {
         for (Instruction instruction : instructionsInWindow(
             function,
             function.getEntryPoint(),
             MAX_GAME_STATES_PROVIDER_SCAN_BYTES
         )) {
             Address address = instruction.getAddress();
-            if (bytesAt(address, 0x48, 0x39, 0x2d)) {
-                Address resolved = resolveRipRelative(address, 7, 3);
-                boolean hasPrologueContext = bytesAt(address.subtract(5), 0x48, 0x8b, 0xf1, 0x33, 0xed);
-                return new PatternMatch(
-                    hasPrologueContext ? address.subtract(5) : address,
-                    address,
-                    resolved,
-                    hasPrologueContext
-                        ? "48 8B F1 33 ED 48 39 2D ^ ?? ?? ?? ?? 0F 85 ?? ?? ?? ??"
-                        : "48 39 2D ^ ?? ?? ?? ?? 0F 85 ?? ?? ?? ??",
-                    hasPrologueContext ? 8 : 3,
-                    "static qword null-check"
-                );
-            }
-
-            if (bytesAt(address, 0x48, 0x83, 0x3d) && u8(address.add(7)) == 0x00) {
-                return new PatternMatch(
-                    address,
-                    address,
-                    resolveRipRelative(address, 8, 3),
-                    "48 83 3D ^ ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ??",
+            if (isStaticQwordNullCheck(instruction)) {
+                boolean hasPrologueContext = hasPreviousInstructionText(function, address, "XOR EBP,EBP");
+                return ripRelativeMatch(
+                    hasPrologueContext ? getInstructionBefore(address).getAddress() : address,
+                    instruction,
                     3,
-                    "static qword null-check"
+                    "static qword null-check",
+                    hasPrologueContext ? "provider-prologue" : null
                 );
             }
         }
         return null;
     }
 
-    private PatternMatch findStaticQwordReturn(Function function) throws Exception {
+    private OffsetMatch findStaticQwordReturn(Function function) throws Exception {
         for (Instruction instruction : instructionsInWindow(
             function,
             function.getEntryPoint(),
             MAX_FILE_ROOT_FINDER_SCAN_BYTES
         )) {
             Address address = instruction.getAddress();
-            if (!bytesAt(address, 0x48, 0x8b, 0x05) || !hasNearbyRet(address, 0x18)) {
+            if (!isStaticMovIntoRax(instruction) || !hasNearbyRet(address, 0x18)) {
                 continue;
             }
 
-            boolean hasTlsInitContext = bytesAt(function.getEntryPoint(), 0x48, 0x83, 0xec, 0x28, 0x65, 0x48)
+            boolean hasTlsInitContext = hasThreadLocalSetupNearEntry(function)
                 && address.subtract(function.getEntryPoint()) < 0x80;
-            return new PatternMatch(
-                hasTlsInitContext ? function.getEntryPoint() : address,
+            return ripRelativeMatch(
                 address,
-                resolveRipRelative(address, 7, 3),
-                hasTlsInitContext
-                    ? "48 83 EC 28 65 48 8B 04 25 58 00 00 00 B9 10 00 00 00 48 8B 00 8B 0C 01 39 0D ?? ?? ?? ?? 7E ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? FF 75 ?? E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 05 ^ ?? ?? ?? ?? 48 83 C4 28 C3"
-                    : "48 8B 05 ^ ?? ?? ?? ?? 48 83 C4 ?? C3",
-                hasTlsInitContext ? (int)address.subtract(function.getEntryPoint()) + 3 : 3,
-                "static qword return"
+                instruction,
+                3,
+                "static qword return",
+                hasTlsInitContext ? "tls-init-context" : null
             );
         }
         return null;
     }
 
-    private PatternMatch findDwordIncrementAfter(Function function, Address anchorReference) throws Exception {
+    private OffsetMatch findDwordIncrementAfter(Function function, Address anchorReference) throws Exception {
         for (Instruction instruction : instructionsInWindow(function, anchorReference, MAX_AREA_COUNTER_SCAN_BYTES)) {
             Address address = instruction.getAddress();
-            if (!bytesAt(address, 0xff, 0x05)) {
+            if (!isStaticDwordIncrement(instruction)) {
                 continue;
             }
 
-            boolean hasTlsContext = hasAreaChangeTlsContext(address);
-            return new PatternMatch(
-                hasTlsContext ? address.subtract(0x4e) : address,
+            boolean hasTlsContext = hasAreaChangeTlsContext(function, address);
+            return ripRelativeMatch(
                 address,
-                resolveRipRelative(address, 6, 2),
-                hasTlsContext
-                    ? "65 48 8B 04 25 58 00 00 00 B9 10 00 00 00 48 8B 00 8B 0C 01 39 0D ?? ?? ?? ?? 7E ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? FF 75 ?? E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? FF 05 ^ ?? ?? ?? ?? 4C 8B 06 49 8D 50 20"
-                    : "FF 05 ^ ?? ?? ?? ??",
-                hasTlsContext ? 0x50 : 2,
-                "static dword increment"
+                instruction,
+                2,
+                "static dword increment",
+                hasTlsContext ? "tls-init-context" : null
             );
         }
         return null;
+    }
+
+    private List<OffsetMatch> findGameCullSizeShapeMatches() throws Exception {
+        List<OffsetMatch> matches = new ArrayList<>();
+        InstructionIterator instructions = currentProgram.getListing().getInstructions(
+            currentProgram.getMemory().getExecuteSet(),
+            true
+        );
+
+        while (instructions.hasNext() && !monitor.isCancelled()) {
+            Instruction instruction = instructions.next();
+            Address address = instruction.getAddress();
+            if (!isStaticSubFromEax(instruction)) {
+                continue;
+            }
+
+            Address staticReference = firstMemoryReferenceFrom(instruction);
+            if (staticReference == null || !hasCallBefore(address, 0x80) || !hasVectorZeroAfter(address, 0x40)) {
+                continue;
+            }
+
+            matches.add(new OffsetMatch(
+                address,
+                address,
+                staticReference,
+                ripPattern(address, instruction.getLength(), 2, 4),
+                2,
+                "game cull size subtract from FOO result",
+                "call-before",
+                "vector-zero-after"
+            ));
+        }
+        return matches;
+    }
+
+    private boolean isStaticQwordNullCheck(Instruction instruction) {
+        if (!"CMP".equals(instruction.getMnemonicString()) || firstMemoryReferenceFrom(instruction) == null) {
+            return false;
+        }
+
+        String text = instruction.toString().toUpperCase();
+        return text.indexOf("QWORD PTR") >= 0
+            && (text.endsWith(",RBP") || text.endsWith(",0X0") || text.endsWith(",0"));
+    }
+
+    private boolean isStaticMovIntoRax(Instruction instruction) {
+        if (!"MOV".equals(instruction.getMnemonicString()) || firstMemoryReferenceFrom(instruction) == null) {
+            return false;
+        }
+
+        return instruction.toString().toUpperCase().startsWith("MOV RAX,");
+    }
+
+    private boolean isStaticDwordIncrement(Instruction instruction) {
+        if (!"INC".equals(instruction.getMnemonicString()) || firstMemoryReferenceFrom(instruction) == null) {
+            return false;
+        }
+
+        return instruction.toString().toUpperCase().indexOf("DWORD PTR") >= 0;
+    }
+
+    private boolean isStaticSubFromEax(Instruction instruction) {
+        if (!"SUB".equals(instruction.getMnemonicString())) {
+            return false;
+        }
+
+        String text = instruction.toString().toUpperCase();
+        return text.startsWith("SUB EAX,") && firstMemoryReferenceFrom(instruction) != null;
+    }
+
+    private OffsetMatch ripRelativeMatch(Address matchStart, Instruction instruction, int displacementOffset,
+            String matchKind, String... traits) throws Exception {
+        Address instructionAddress = instruction.getAddress();
+        Address resolved = firstMemoryReferenceFrom(instruction);
+        if (resolved == null) {
+            resolved = resolveRipRelative(instructionAddress, instruction.getLength(), displacementOffset);
+        }
+
+        int bytesToSkip = (int)instructionAddress.subtract(matchStart) + displacementOffset;
+        int patternLength = (int)instructionAddress.subtract(matchStart) + instruction.getLength();
+        return new OffsetMatch(
+            matchStart,
+            instructionAddress,
+            resolved,
+            ripPattern(matchStart, patternLength, bytesToSkip, 4),
+            bytesToSkip,
+            matchKind,
+            traits
+        );
+    }
+
+    private String ripPattern(Address start, int length, int displacementOffset, int displacementLength)
+            throws MemoryAccessException {
+        boolean[] wildcard = new boolean[length];
+        markWildcard(wildcard, displacementOffset, displacementLength);
+        markReferencedDisplacements(start, length, wildcard);
+
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < length; i++) {
+            if (i > 0) {
+                builder.append(' ');
+            }
+            if (i == displacementOffset) {
+                builder.append("^ ");
+            }
+            if (wildcard[i]) {
+                builder.append("??");
+            }
+            else {
+                builder.append(String.format("%02X", u8(start.add(i))));
+            }
+        }
+        return builder.toString();
+    }
+
+    private void markReferencedDisplacements(Address start, int length, boolean[] wildcard)
+            throws MemoryAccessException {
+        Address end = start.add(length - 1);
+        Instruction instruction = getInstructionAt(start);
+        if (instruction == null) {
+            instruction = getInstructionAfter(start);
+        }
+
+        while (instruction != null
+            && instruction.getAddress().compareTo(end) <= 0
+            && instruction.getAddress().compareTo(start) >= 0) {
+            for (Reference reference : getReferencesFrom(instruction.getAddress())) {
+                Address toAddress = reference.getToAddress();
+                if (reference.isMemoryReference()
+                    && toAddress != null
+                    && currentProgram.getMemory().contains(toAddress)) {
+                    markDisplacementBytes(start, instruction, toAddress, wildcard);
+                }
+            }
+            instruction = getInstructionAfter(instruction);
+        }
+    }
+
+    private void markDisplacementBytes(Address patternStart, Instruction instruction, Address target, boolean[] wildcard)
+            throws MemoryAccessException {
+        long nextInstructionOffset = instruction.getAddress().getOffset() + instruction.getLength();
+        int displacement = (int)(target.getOffset() - nextInstructionOffset);
+        int instructionOffset = (int)instruction.getAddress().subtract(patternStart);
+
+        for (int i = 0; i <= instruction.getLength() - 4; i++) {
+            if (u8(instruction.getAddress().add(i)) == (displacement & 0xff)
+                && u8(instruction.getAddress().add(i + 1)) == ((displacement >>> 8) & 0xff)
+                && u8(instruction.getAddress().add(i + 2)) == ((displacement >>> 16) & 0xff)
+                && u8(instruction.getAddress().add(i + 3)) == ((displacement >>> 24) & 0xff)) {
+                markWildcard(wildcard, instructionOffset + i, 4);
+                return;
+            }
+        }
+    }
+
+    private void markWildcard(boolean[] wildcard, int offset, int length) {
+        for (int i = Math.max(0, offset); i < offset + length && i < wildcard.length; i++) {
+            wildcard[i] = true;
+        }
+    }
+
+    private Address firstMemoryReferenceFrom(Instruction instruction) {
+        for (Reference reference : getReferencesFrom(instruction.getAddress())) {
+            Address toAddress = reference.getToAddress();
+            if (reference.isMemoryReference()
+                && toAddress != null
+                && currentProgram.getMemory().contains(toAddress)) {
+                return toAddress;
+            }
+        }
+        return null;
+    }
+
+    private boolean hasCallBefore(Address address, int maxBytes) {
+        Function function = getFunctionContaining(address);
+        if (!hasInstructionBody(function)) {
+            return false;
+        }
+
+        InstructionIterator instructions = currentProgram.getListing().getInstructions(function.getBody(), true);
+        while (instructions.hasNext()) {
+            Instruction instruction = instructions.next();
+            Address instructionAddress = instruction.getAddress();
+            if (instructionAddress.compareTo(address) >= 0) {
+                break;
+            }
+            if ("CALL".equals(instruction.getMnemonicString()) && address.subtract(instructionAddress) <= maxBytes) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasPreviousInstructionText(Function function, Address address, String expectedText) {
+        Instruction instruction = getInstructionBefore(address);
+        return instruction != null
+            && function.getBody().contains(instruction.getAddress())
+            && instruction.toString().toUpperCase().equals(expectedText);
+    }
+
+    private boolean hasVectorZeroAfter(Address address, int maxBytes) {
+        Instruction instruction = getInstructionAfter(address);
+        while (instruction != null && instruction.getAddress().subtract(address) <= maxBytes) {
+            String mnemonic = instruction.getMnemonicString();
+            String text = instruction.toString().toUpperCase();
+            if (("XORPS".equals(mnemonic) || "PXOR".equals(mnemonic) || "XORPD".equals(mnemonic))
+                && text.indexOf("XMM") >= 0) {
+                return true;
+            }
+            instruction = getInstructionAfter(instruction);
+        }
+        return false;
+    }
+
+    private List<OffsetMatch> findTerrainRotatorHelperShapeMatches() throws Exception {
+        return findTerrainRotationShapeMatches(false);
+    }
+
+    private List<OffsetMatch> findTerrainRotationSelectorShapeMatches() throws Exception {
+        return findTerrainRotationShapeMatches(true);
+    }
+
+    private List<OffsetMatch> findTerrainRotationShapeMatches(boolean selector) throws Exception {
+        List<OffsetMatch> matches = new ArrayList<>();
+        for (Function function : currentProgram.getFunctionManager().getFunctions(true)) {
+            if (!hasInstructionBody(function)) {
+                continue;
+            }
+
+            OffsetMatch match = inspectTerrainRotationShape(function, selector);
+            if (match != null) {
+                matches.add(match);
+            }
+        }
+        return matches;
+    }
+
+    private OffsetMatch inspectTerrainRotationShape(Function function, boolean selector) throws Exception {
+        List<Instruction> instructions = instructionsInWindow(function, function.getEntryPoint(), 0xc0);
+        if (instructions.size() < 40 || instructions.size() > 80) {
+            return null;
+        }
+
+        Address entry = function.getEntryPoint();
+        if (!hasTerrainHelperEntryShape(instructions)) {
+            return null;
+        }
+
+        Instruction tableLea = null;
+        Instruction rotatorLea = null;
+        boolean hasClampEight = false;
+        boolean hasTileSizeConstant = false;
+        boolean hasScaleByThree = false;
+        boolean hasBoundsCheck = false;
+        boolean hasTerrainReadCall = false;
+
+        for (Instruction instruction : instructions) {
+            Address address = instruction.getAddress();
+            String text = instruction.toString().toUpperCase();
+            if (isStaticLeaInto(instruction, "RCX")) {
+                tableLea = instruction;
+            }
+            if (isStaticLeaInto(instruction, "RAX")) {
+                rotatorLea = instruction;
+            }
+            if ("MOV EAX,0X8".equals(text) || "CMP R8D,EAX".equals(text)) {
+                hasClampEight = true;
+            }
+            if ("MOV EDX,0X16".equals(text)) {
+                hasTileSizeConstant = true;
+            }
+            if ("LEA".equals(instruction.getMnemonicString())
+                && text.startsWith("LEA R8,")
+                && text.indexOf("R8*0X2") >= 0) {
+                hasScaleByThree = true;
+            }
+            if (text.indexOf("0X17") >= 0) {
+                hasBoundsCheck = true;
+            }
+            if ("CALL".equals(instruction.getMnemonicString()) && address.subtract(entry) > 0x80) {
+                hasTerrainReadCall = true;
+            }
+        }
+
+        if (tableLea == null || rotatorLea == null || !hasClampEight || !hasTileSizeConstant
+            || !hasScaleByThree || !hasBoundsCheck || !hasTerrainReadCall) {
+            return null;
+        }
+
+        if (selector) {
+            return ripRelativeMatch(
+                entry,
+                tableLea,
+                3,
+                "terrain rotation selector function shape"
+            );
+        }
+
+        return ripRelativeMatch(
+            entry,
+            rotatorLea,
+            3,
+            "terrain rotator helper function shape"
+        );
+    }
+
+    private boolean hasTerrainHelperEntryShape(List<Instruction> instructions) {
+        if (instructions.size() < 4) {
+            return false;
+        }
+
+        return instructionTextEquals(instructions.get(0), "SUB RSP,0x38")
+            && instructionTextEquals(instructions.get(1), "MOVZX EAX,R8B")
+            && instructionTextEquals(instructions.get(2), "MOV R10,RCX")
+            && instructionTextEquals(instructions.get(3), "MOV R9,RDX");
+    }
+
+    private boolean isStaticLeaInto(Instruction instruction, String register) {
+        if (!"LEA".equals(instruction.getMnemonicString()) || firstMemoryReferenceFrom(instruction) == null) {
+            return false;
+        }
+
+        return instruction.toString().toUpperCase().startsWith("LEA " + register + ",");
+    }
+
+    private boolean instructionTextEquals(Instruction instruction, String expected) {
+        return instruction.toString().toUpperCase().equals(expected.toUpperCase());
     }
 
     private boolean hasNearbyRet(Address address, int maxBytes) {
@@ -428,15 +751,32 @@ public class OffsetRecoveryFramework extends GhidraScript {
         return false;
     }
 
-    private boolean hasAreaChangeTlsContext(Address incrementAddress) {
-        try {
-            Address start = incrementAddress.subtract(0x4e);
-            return bytesAt(start, 0x65, 0x48, 0x8b, 0x04, 0x25, 0x58)
-                && bytesAt(incrementAddress.add(6), 0x4c, 0x8b);
+    private boolean hasThreadLocalSetupNearEntry(Function function) {
+        for (Instruction instruction : instructionsInWindow(function, function.getEntryPoint(), 0x40)) {
+            if (isThreadLocalAccess(instruction)) {
+                return true;
+            }
         }
-        catch (Exception e) {
-            return false;
+        return false;
+    }
+
+    private boolean hasAreaChangeTlsContext(Function function, Address incrementAddress) {
+        for (Instruction instruction : instructionsInWindow(function, function.getEntryPoint(), MAX_AREA_COUNTER_SCAN_BYTES)) {
+            Address address = instruction.getAddress();
+            if (address.compareTo(incrementAddress) >= 0) {
+                break;
+            }
+            if (incrementAddress.subtract(address) <= 0x80 && isThreadLocalAccess(instruction)) {
+                return true;
+            }
         }
+        return false;
+    }
+
+    private boolean isThreadLocalAccess(Instruction instruction) {
+        String text = instruction.toString().toUpperCase();
+        return (text.indexOf("GS:") >= 0 || text.indexOf("FS:") >= 0)
+            && text.indexOf("0X58") >= 0;
     }
 
     private Address resolveRipRelative(Address instructionAddress, int instructionLength, int displacementOffset)
@@ -450,31 +790,8 @@ public class OffsetRecoveryFramework extends GhidraScript {
         return instructionAddress.getAddressSpace().getAddress(targetOffset);
     }
 
-    private boolean bytesAt(Address address, int... expected) {
-        try {
-            for (int i = 0; i < expected.length; i++) {
-                if (u8(address.add(i)) != expected[i]) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        catch (Exception e) {
-            return false;
-        }
-    }
-
     private int u8(Address address) throws MemoryAccessException {
         return getByte(address) & 0xff;
-    }
-
-    private Address expectedAddress(String offsetText) {
-        try {
-            return currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseUnsignedLong(offsetText, 16));
-        }
-        catch (Exception e) {
-            return null;
-        }
     }
 
     private int refsToScore(Address address, int score, List<String> reasons, List<String> validations) {
@@ -498,28 +815,15 @@ public class OffsetRecoveryFramework extends GhidraScript {
     }
 
     private RecoveryResult buildResult(String offsetName, String staticLabel, String sourceLabel,
-            String expectedAddressText, StringHit anchor, Address stringReferenceAddress, Function xrefFunction,
-            Function sourceFunction, int callDepth, PatternMatch match, int score, List<String> scoreReasons,
+            StringHit anchor, Address stringReferenceAddress, Function xrefFunction,
+            Function sourceFunction, int callDepth, OffsetMatch match, int score, List<String> scoreReasons,
             List<String> validations) {
-        Address expected = expectedAddress(expectedAddressText);
-        String expectedStatus = "not configured";
-        if (expected != null) {
-            if (expected.equals(match.resolvedAddress)) {
-                expectedStatus = "matches " + expected;
-                validations.add("matches current regression expectation");
-            }
-            else {
-                expectedStatus = "changed from " + expected + " to " + match.resolvedAddress;
-                validations.add("does not match current regression expectation");
-            }
-        }
-
-        if (match.pattern.indexOf('^') >= 0) {
+        if (match.outputPattern.indexOf('^') >= 0) {
             validations.add("pattern marks BytesToSkip with ^");
         }
 
         return new RecoveryResult(offsetName, staticLabel, sourceLabel, anchor, stringReferenceAddress, xrefFunction,
-            sourceFunction, callDepth, match, Math.min(score, 100), expectedStatus, scoreReasons, validations);
+            sourceFunction, callDepth, match, Math.min(score, 100), scoreReasons, validations);
     }
 
     private String confidenceLabel(int score) {
@@ -539,7 +843,7 @@ public class OffsetRecoveryFramework extends GhidraScript {
     }
 
     private interface AnchorScanner {
-        PatternMatch scan(Function xrefFunction, Address stringReferenceAddress) throws Exception;
+        OffsetMatch scan(Function xrefFunction, Address stringReferenceAddress) throws Exception;
     }
 
     private class GameStatesRecipe implements OffsetRecipe {
@@ -569,7 +873,7 @@ public class OffsetRecoveryFramework extends GhidraScript {
                     }
 
                     for (Function providerFunction : directCallsBefore(xrefFunction, reference.getFromAddress())) {
-                        PatternMatch match = findStaticQwordNullCheck(providerFunction);
+                        OffsetMatch match = findStaticQwordNullCheck(providerFunction);
                         if (match == null) {
                             continue;
                         }
@@ -585,9 +889,9 @@ public class OffsetRecoveryFramework extends GhidraScript {
                             reasons.add("provider is a lower-address helper function");
                         }
                         score += refsToScore(match.resolvedAddress, 15, reasons, validations);
-                        if (match.pattern.startsWith("48 8B F1 33 ED")) {
+                        if (match.hasTrait("provider-prologue")) {
                             score += 10;
-                            reasons.add("matched known Game States prologue context");
+                            reasons.add("matched provider prologue context");
                         }
                         validations.add("provider function: " + formatFunction(providerFunction));
 
@@ -595,7 +899,6 @@ public class OffsetRecoveryFramework extends GhidraScript {
                             name(),
                             "GameStates_Static",
                             "GameStatesProvider",
-                            "144048458",
                             anchor,
                             reference.getFromAddress(),
                             xrefFunction,
@@ -639,7 +942,7 @@ public class OffsetRecoveryFramework extends GhidraScript {
                     }
 
                     for (Function candidateFunction : directCallsToDepth(xrefFunction, 2)) {
-                        PatternMatch match = findStaticQwordReturn(candidateFunction);
+                        OffsetMatch match = findStaticQwordReturn(candidateFunction);
                         if (match == null) {
                             continue;
                         }
@@ -660,7 +963,7 @@ public class OffsetRecoveryFramework extends GhidraScript {
                         score += proximityScore(candidateFunction.getEntryPoint(), match.instructionAddress, 0x90, 15,
                             "static return", reasons);
                         score += refsToScore(match.resolvedAddress, 15, reasons, validations);
-                        if (match.pattern.startsWith("48 83 EC 28 65 48")) {
+                        if (match.hasTrait("tls-init-context")) {
                             score += 15;
                             reasons.add("matched FileRootFinder TLS-init context");
                         }
@@ -670,7 +973,6 @@ public class OffsetRecoveryFramework extends GhidraScript {
                             name(),
                             "FileRoot_Static",
                             "FileRootFinder",
-                            "1441829C8",
                             anchor,
                             reference.getFromAddress(),
                             xrefFunction,
@@ -697,18 +999,17 @@ public class OffsetRecoveryFramework extends GhidraScript {
                     AnchorSpec.exact("Got Instance Details from login server"),
                     AnchorSpec.contains("Instance Details from login server")
                 )
-                .expectedAddress("14347CF48")
                 .staticLabel("AreaChangeCounter_Static")
                 .sourceLabel("HandleLoginServerInstanceDetails")
                 .scanner(new AnchorScanner() {
                     @Override
-                    public PatternMatch scan(Function xrefFunction, Address stringReferenceAddress) throws Exception {
+                    public OffsetMatch scan(Function xrefFunction, Address stringReferenceAddress) throws Exception {
                         return findDwordIncrementAfter(xrefFunction, stringReferenceAddress);
                     }
                 })
                 .scoreBase(45)
                 .scanProximity(0x180, 25)
-                .contextPrefix("65 48 8B", 20, "matched area-change TLS-init context")
+                .contextTrait("tls-init-context", 20, "matched area-change TLS-init context")
                 .build();
         }
 
@@ -728,17 +1029,229 @@ public class OffsetRecoveryFramework extends GhidraScript {
         }
     }
 
+    private class GameCullSizeRecipe implements OffsetRecipe {
+        @Override
+        public String name() {
+            return "GameCullSize";
+        }
+
+        @Override
+        public String failureReason() {
+            return "FOO-result static subtract shape was not found.";
+        }
+
+        @Override
+        public List<RecoveryResult> recoverCandidates() throws Exception {
+            List<OffsetMatch> matches = findGameCullSizeShapeMatches();
+            List<RecoveryResult> candidates = new ArrayList<>();
+            StringHit syntheticAnchor = new StringHit("GameCullSize FOO-result subtract shape", currentProgram.getMinAddress());
+
+            for (OffsetMatch match : matches) {
+                Function function = getFunctionContaining(match.instructionAddress);
+                List<String> reasons = new ArrayList<>();
+                List<String> validations = new ArrayList<>();
+                int score = 45;
+
+                reasons.add("matched FOO-result static subtract shape");
+
+                if (matches.size() == 1) {
+                    score += 30;
+                    reasons.add("candidate is unique");
+                }
+                else {
+                    validations.add("candidate hit count: " + matches.size());
+                }
+
+                if (hasInstructionBody(function) && function.getBody().contains(match.instructionAddress)) {
+                    score += 10;
+                    validations.add("match is inside function body: " + formatFunction(function));
+                }
+
+                if (callerCount(function) > 0) {
+                    score += 10;
+                    reasons.add("containing function has direct callers");
+                }
+
+                if (hasCallBefore(match.instructionAddress, 0x80)) {
+                    score += 15;
+                    reasons.add("match follows a nearby function call");
+                }
+
+                if (hasVectorZeroAfter(match.instructionAddress, 0x40)) {
+                    score += 15;
+                    reasons.add("match is followed by vector-zero setup");
+                }
+
+                if (getInstructionAt(match.instructionAddress) != null) {
+                    score += 5;
+                    validations.add("match starts on a decoded instruction");
+                }
+
+                candidates.add(buildResult(
+                    name(),
+                    "GameCullSize_Static",
+                    "GameCullSize_Source",
+                    syntheticAnchor,
+                    match.instructionAddress,
+                    function,
+                    function,
+                    0,
+                    match,
+                    score,
+                    reasons,
+                    validations
+                ));
+            }
+            return candidates;
+        }
+    }
+
+    private class TerrainRotationSelectorRecipe implements OffsetRecipe {
+        @Override
+        public String name() {
+            return "Terrain Rotation Selector";
+        }
+
+        @Override
+        public String failureReason() {
+            return "terrain rotation helper function shape was not found.";
+        }
+
+        @Override
+        public List<RecoveryResult> recoverCandidates() throws Exception {
+            List<OffsetMatch> matches = findTerrainRotationSelectorShapeMatches();
+            List<RecoveryResult> candidates = new ArrayList<>();
+            StringHit syntheticAnchor = new StringHit("Terrain Rotation Selector function shape", currentProgram.getMinAddress());
+
+            for (OffsetMatch match : matches) {
+                Function function = getFunctionContaining(match.instructionAddress);
+                List<String> reasons = new ArrayList<>();
+                List<String> validations = new ArrayList<>();
+                int score = 50;
+
+                score += 20;
+                reasons.add("matched Terrain Rotation Selector function shape");
+
+                if (matches.size() == 1) {
+                    score += 30;
+                    reasons.add("candidate is unique");
+                }
+                else {
+                    validations.add("candidate hit count: " + matches.size());
+                }
+
+                if (hasInstructionBody(function) && function.getBody().contains(match.instructionAddress)) {
+                    score += 10;
+                    validations.add("match is inside function body: " + formatFunction(function));
+                }
+
+                if (callerCount(function) == 1) {
+                    score += 10;
+                    reasons.add("selector helper has a single direct caller");
+                }
+
+                if (getInstructionAt(match.instructionAddress) != null) {
+                    score += 10;
+                    validations.add("match starts on a decoded instruction");
+                }
+
+                candidates.add(buildResult(
+                    name(),
+                    "TerrainRotationSelector_Static",
+                    "TerrainRotationSelector_Source",
+                    syntheticAnchor,
+                    match.instructionAddress,
+                    function,
+                    function,
+                    0,
+                    match,
+                    score,
+                    reasons,
+                    validations
+                ));
+            }
+            return candidates;
+        }
+    }
+
+    private class TerrainRotatorHelperRecipe implements OffsetRecipe {
+        @Override
+        public String name() {
+            return "Terrain Rotator Helper";
+        }
+
+        @Override
+        public String failureReason() {
+            return "terrain rotation helper function shape was not found.";
+        }
+
+        @Override
+        public List<RecoveryResult> recoverCandidates() throws Exception {
+            List<OffsetMatch> matches = findTerrainRotatorHelperShapeMatches();
+            List<RecoveryResult> candidates = new ArrayList<>();
+            StringHit syntheticAnchor = new StringHit("Terrain Rotator Helper function shape", currentProgram.getMinAddress());
+
+            for (OffsetMatch match : matches) {
+                Function function = getFunctionContaining(match.instructionAddress);
+                List<String> reasons = new ArrayList<>();
+                List<String> validations = new ArrayList<>();
+                int score = 50;
+
+                score += 20;
+                reasons.add("matched Terrain Rotator helper function shape");
+
+                if (matches.size() == 1) {
+                    score += 30;
+                    reasons.add("candidate is unique");
+                }
+                else {
+                    validations.add("candidate hit count: " + matches.size());
+                }
+
+                if (hasInstructionBody(function) && function.getBody().contains(match.instructionAddress)) {
+                    score += 10;
+                    validations.add("match is inside function body: " + formatFunction(function));
+                }
+
+                if (callerCount(function) == 1) {
+                    score += 10;
+                    reasons.add("helper has a single direct caller");
+                }
+
+                if (getInstructionAt(match.instructionAddress) != null) {
+                    score += 10;
+                    validations.add("match starts on a decoded instruction");
+                }
+
+                candidates.add(buildResult(
+                    name(),
+                    "TerrainRotatorHelper_Static",
+                    "TerrainRotatorHelper_Source",
+                    syntheticAnchor,
+                    match.instructionAddress,
+                    function,
+                    function,
+                    0,
+                    match,
+                    score,
+                    reasons,
+                    validations
+                ));
+            }
+            return candidates;
+        }
+    }
+
     private class AnchorRecipeBuilder {
         private final String name;
         private AnchorSpec[] anchors = new AnchorSpec[0];
-        private String expectedAddress;
         private String staticLabel;
         private String sourceLabel;
         private AnchorScanner scanner;
         private int scoreBase = 40;
         private long scanProximityBytes = 0;
         private int scanProximityScore = 0;
-        private String contextPrefix;
+        private String contextTrait;
         private int contextScore = 0;
         private String contextReason = "matched context";
 
@@ -748,11 +1261,6 @@ public class OffsetRecoveryFramework extends GhidraScript {
 
         AnchorRecipeBuilder anchors(AnchorSpec... anchors) {
             this.anchors = anchors;
-            return this;
-        }
-
-        AnchorRecipeBuilder expectedAddress(String expectedAddress) {
-            this.expectedAddress = expectedAddress;
             return this;
         }
 
@@ -782,8 +1290,8 @@ public class OffsetRecoveryFramework extends GhidraScript {
             return this;
         }
 
-        AnchorRecipeBuilder contextPrefix(String contextPrefix, int contextScore, String contextReason) {
-            this.contextPrefix = contextPrefix;
+        AnchorRecipeBuilder contextTrait(String contextTrait, int contextScore, String contextReason) {
+            this.contextTrait = contextTrait;
             this.contextScore = contextScore;
             this.contextReason = contextReason;
             return this;
@@ -811,7 +1319,7 @@ public class OffsetRecoveryFramework extends GhidraScript {
                                 continue;
                             }
 
-                            PatternMatch match = scanner.scan(xrefFunction, reference.getFromAddress());
+                            OffsetMatch match = scanner.scan(xrefFunction, reference.getFromAddress());
                             if (match == null) {
                                 continue;
                             }
@@ -824,7 +1332,7 @@ public class OffsetRecoveryFramework extends GhidraScript {
                                 score += proximityScore(reference.getFromAddress(), match.instructionAddress,
                                     scanProximityBytes, scanProximityScore, "match", reasons);
                             }
-                            if (contextPrefix != null && match.pattern.startsWith(contextPrefix)) {
+                            if (contextTrait != null && match.hasTrait(contextTrait)) {
                                 score += contextScore;
                                 reasons.add(contextReason);
                             }
@@ -837,7 +1345,6 @@ public class OffsetRecoveryFramework extends GhidraScript {
                                 name,
                                 staticLabel,
                                 sourceLabel,
-                                expectedAddress,
                                 anchor,
                                 reference.getFromAddress(),
                                 xrefFunction,
@@ -931,16 +1438,14 @@ public class OffsetRecoveryFramework extends GhidraScript {
         final Function xrefFunction;
         final Function sourceFunction;
         final int callDepth;
-        final PatternMatch match;
+        final OffsetMatch match;
         final int score;
-        final String expectedStatus;
         final List<String> scoreReasons;
         final List<String> validations;
 
         RecoveryResult(String offsetName, String staticLabel, String sourceLabel, StringHit anchor,
                 Address stringReferenceAddress, Function xrefFunction, Function sourceFunction, int callDepth,
-                PatternMatch match, int score, String expectedStatus, List<String> scoreReasons,
-                List<String> validations) {
+                OffsetMatch match, int score, List<String> scoreReasons, List<String> validations) {
             this.offsetName = offsetName;
             this.staticLabel = staticLabel;
             this.sourceLabel = sourceLabel;
@@ -951,29 +1456,39 @@ public class OffsetRecoveryFramework extends GhidraScript {
             this.callDepth = callDepth;
             this.match = match;
             this.score = score;
-            this.expectedStatus = expectedStatus;
             this.scoreReasons = scoreReasons;
             this.validations = validations;
         }
 
     }
 
-    private static class PatternMatch {
-        final Address patternAddress;
+    private static class OffsetMatch {
+        final Address matchAddress;
         final Address instructionAddress;
         final Address resolvedAddress;
-        final String pattern;
+        final String outputPattern;
         final int bytesToSkip;
-        final String instructionKind;
+        final String matchKind;
+        final Set<String> traits;
 
-        PatternMatch(Address patternAddress, Address instructionAddress, Address resolvedAddress,
-                String pattern, int bytesToSkip, String instructionKind) {
-            this.patternAddress = patternAddress;
+        OffsetMatch(Address matchAddress, Address instructionAddress, Address resolvedAddress,
+                String outputPattern, int bytesToSkip, String matchKind, String... traits) {
+            this.matchAddress = matchAddress;
             this.instructionAddress = instructionAddress;
             this.resolvedAddress = resolvedAddress;
-            this.pattern = pattern;
+            this.outputPattern = outputPattern;
             this.bytesToSkip = bytesToSkip;
-            this.instructionKind = instructionKind;
+            this.matchKind = matchKind;
+            this.traits = new HashSet<>();
+            for (String trait : traits) {
+                if (trait != null && trait.length() > 0) {
+                    this.traits.add(trait);
+                }
+            }
+        }
+
+        boolean hasTrait(String trait) {
+            return traits.contains(trait);
         }
     }
 
@@ -1008,3 +1523,4 @@ public class OffsetRecoveryFramework extends GhidraScript {
         }
     }
 }
+

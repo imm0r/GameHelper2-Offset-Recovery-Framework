@@ -17,10 +17,13 @@ Set `VERBOSE = true` in `OffsetRecoveryFramework.java` to print score reasons an
 - `Game States`
 - `File Root` (`Mods.dat` by filename, regardless of directory)
 - `AreaChangeCounter`
+- `Terrain Rotator Helper`
+- `Terrain Rotation Selector`
+- `GameCullSize`
 
 ## Recipe model
 
-Each recipe starts from one or more anchor strings, follows XREFs and call chains, then scans Ghidra instructions for a RIP-relative static reference. The best candidate is scored with local validation rules such as proximity, expected instruction shape, XREF count, and current known-address regression checks.
+Most recipes start from one or more anchor strings, follow XREFs and call chains, then scan Ghidra instructions for a RIP-relative static reference. Some recipes, such as `Terrain Rotator Helper` and `GameCullSize`, use function-shape detection instead of a string anchor. The best candidate is scored with local validation rules such as proximity, expected instruction shape, XREF count, uniqueness, and semantic context.
 
 For simple offsets, use `AnchorRecipeBuilder`. For complex offsets, add a custom `OffsetRecipe` implementation.
 
@@ -31,7 +34,7 @@ For simple offsets, use `AnchorRecipeBuilder`. For complex offsets, add a custom
 3. Match a stable instruction shape, preferably RIP-relative.
 4. Resolve the static address with `resolveRipRelative`.
 5. Add validation rules that prove the candidate is semantically correct.
-6. Add an expected address for the current binary so future framework refactors can be checked quickly.
+6. Make wrong candidates lose score or fail cleanly.
 
 ## Patch-day review
 
