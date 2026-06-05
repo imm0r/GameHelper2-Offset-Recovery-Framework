@@ -82,6 +82,27 @@
                               CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal"
                               HeadersVisibility="Column" FontFamily="Consolas" FontSize="12"
                               SelectionChanged="DiffSelectionChanged">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding StatusText}" Value="unchanged">
+                                        <Setter Property="Background" Value="#E6F4EA"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusText}" Value="pattern changed">
+                                        <Setter Property="Background" Value="#FFF4CE"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusText}" Value="address moved">
+                                        <Setter Property="Background" Value="#FBDDDD"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusText}" Value="missing">
+                                        <Setter Property="Background" Value="#FBDDDD"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding StatusText}" Value="new">
+                                        <Setter Property="Background" Value="#E1ECFB"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Offset" Binding="{Binding Name}" Width="180"/>
                             <DataGridTextColumn Header="Status" Binding="{Binding StatusText}" Width="130"/>

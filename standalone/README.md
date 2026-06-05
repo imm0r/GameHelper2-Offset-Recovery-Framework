@@ -102,7 +102,8 @@ The *Diff* tab loads a previous `offsets.json` and compares it against the
 current run (`OffsetDiff` / `OffsetsJson`). Each offset is classified
 `unchanged`, `address moved`, `pattern changed`, `new`, or `missing`, with a
 details pane showing the old vs new address, `BytesToSkip`, and pattern — so a
-patch-day review is one glance.
+patch-day review is one glance. Rows are colour-coded: green (unchanged), yellow
+(pattern changed), red (address moved / missing), blue (new).
 
 ## Self-check
 
