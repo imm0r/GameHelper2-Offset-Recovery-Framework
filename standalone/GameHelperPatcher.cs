@@ -27,11 +27,12 @@ namespace OffsetRecovery.Standalone
         public int NotFoundCount;
     }
 
-    // Updates a GameHelper2 StaticOffsetsPatterns.cs / StaticPattern.cs in place: for each
-    // recovered offset it finds the matching `new Pattern("Name", "...")` constructor call
-    // and replaces the pattern string with the freshly recovered one. Our Render() output
-    // already uses GameHelper's "^"/"??" format, so the 2-argument constructor re-derives
-    // BytesToSkip from the "^" marker. Other arguments, comments and layout are preserved.
+    // Updates a GameHelper2 static-pattern file in place, matching each recovered offset by
+    // name and replacing only its pattern string. Two formats are supported:
+    //   * C#  (StaticOffsetsPatterns.cs):  new Pattern("Name", "48 39 2D ^ ?? ?? ?? ?? ...")
+    //   * AHK (StaticOffsetsPatterns.ahk): Map("name", "Name", "pattern", "48 39 2D ^ ?? ...")
+    // Our Render() output already uses the same "^"/"??" format, so the patterns map 1:1.
+    // Comments, layout, and unrelated entries are preserved.
     public static class GameHelperPatcher
     {
         public static PatchOutcome Patch(string source, IReadOnlyList<RecoveryResult> successes)
@@ -43,37 +44,59 @@ namespace OffsetRecovery.Standalone
                 string name = result.OffsetName;
                 string newPattern = result.Match.Pattern;
                 var entry = new PatchEntry { Name = name, NewPattern = newPattern };
+                string esc = Regex.Escape(name);
 
-                var regex = new Regex(
-                    "new\\s+Pattern\\s*\\(\\s*\"" + Regex.Escape(name)
-                        + "\"\\s*,\\s*\"(?<pat>[^\"]*)\"(\\s*,\\s*\\d+)?\\s*\\)");
+                // C#: new Pattern("Name", "..."[, skip]) — normalised to the 2-argument "^" form.
+                var csharp = new Regex(
+                    "new\\s+Pattern\\s*\\(\\s*\"" + esc + "\"\\s*,\\s*\"(?<pat>[^\"]*)\"(\\s*,\\s*\\d+)?\\s*\\)");
 
-                Match m = regex.Match(outcome.NewText);
-                if (!m.Success)
+                // AHK: Map("name", "Name", "pattern", "...") — only the pattern string is rewritten.
+                var ahk = new Regex(
+                    "(?<head>Map\\s*\\(\\s*\"name\"\\s*,\\s*\"" + esc
+                        + "\"\\s*,\\s*\"pattern\"\\s*,\\s*\")(?<pat>[^\"]*)(?<tail>\")");
+
+                if (TryUpdate(outcome, entry, csharp, newPattern,
+                        m => "new Pattern(\"" + name + "\", \"" + newPattern + "\")"))
                 {
-                    entry.Status = PatchStatus.NotFound;
-                    outcome.NotFoundCount++;
-                    outcome.Entries.Add(entry);
+                    continue;
+                }
+                if (TryUpdate(outcome, entry, ahk, newPattern,
+                        m => m.Groups["head"].Value + newPattern + m.Groups["tail"].Value))
+                {
                     continue;
                 }
 
-                entry.OldPattern = m.Groups["pat"].Value;
-                if (entry.OldPattern == newPattern)
-                {
-                    entry.Status = PatchStatus.Unchanged;
-                    outcome.UnchangedCount++;
-                    outcome.Entries.Add(entry);
-                    continue;
-                }
-
-                string replacement = "new Pattern(\"" + name + "\", \"" + newPattern + "\")";
-                outcome.NewText = regex.Replace(outcome.NewText, _ => replacement, 1);
-                entry.Status = PatchStatus.Updated;
-                outcome.UpdatedCount++;
+                entry.Status = PatchStatus.NotFound;
+                outcome.NotFoundCount++;
                 outcome.Entries.Add(entry);
             }
 
             return outcome;
+        }
+
+        private static bool TryUpdate(PatchOutcome outcome, PatchEntry entry, Regex regex, string newPattern,
+            MatchEvaluator evaluator)
+        {
+            Match m = regex.Match(outcome.NewText);
+            if (!m.Success)
+            {
+                return false;
+            }
+
+            entry.OldPattern = m.Groups["pat"].Value;
+            if (entry.OldPattern == newPattern)
+            {
+                entry.Status = PatchStatus.Unchanged;
+                outcome.UnchangedCount++;
+                outcome.Entries.Add(entry);
+                return true;
+            }
+
+            outcome.NewText = regex.Replace(outcome.NewText, evaluator, 1);
+            entry.Status = PatchStatus.Updated;
+            outcome.UpdatedCount++;
+            outcome.Entries.Add(entry);
+            return true;
         }
     }
 }

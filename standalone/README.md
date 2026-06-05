@@ -83,15 +83,16 @@ needed to run it):
 
 ## GameHelper2 integration
 
-GameHelper2 stores its AOB signatures in `StaticOffsetsPatterns.cs` (some forks
-name it `StaticPattern.cs`) as `new Pattern("Name", "48 39 2D ^ ?? ?? ?? ?? …")`
-calls — the same offset names and the same `^`/`??` format this tool emits, so
-each recovered pattern maps one-to-one. The 2-argument constructor re-derives
-`BytesToSkip` from the `^` marker.
+GameHelper2 stores its AOB signatures with the same offset names and the same
+`^`/`??` format this tool emits, so each recovered pattern maps one-to-one. Two
+file formats are supported:
 
-*Update StaticPattern.cs…* (Recovery tab) picks that file and rewrites each
-matching `new Pattern(...)` with the freshly recovered signature
-(`GameHelperPatcher`). It reports per offset whether it was *updated*,
+- **C#** `StaticOffsetsPatterns.cs`: `new Pattern("Name", "48 39 2D ^ ?? ?? ?? ?? …")`
+- **AHK** `StaticOffsetsPatterns.ahk`: `Map("name", "Name", "pattern", "48 39 2D ^ ?? …")`
+
+*Update GameHelper patterns…* (Recovery tab) picks that file and rewrites each
+matching entry with the freshly recovered signature (`GameHelperPatcher`),
+matched by offset name. It reports per offset whether it was *updated*,
 *unchanged*, or *not found*, asks for confirmation, writes a `.bak` backup, then
 saves. Comments, layout, and unrelated entries are left untouched.
 

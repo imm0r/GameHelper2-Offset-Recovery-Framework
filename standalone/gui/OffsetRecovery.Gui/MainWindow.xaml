@@ -38,7 +38,7 @@
                         <Button x:Name="CopyPatternButton" Content="Copy pattern" Padding="12,4" Click="CopyPatternClick"/>
                         <Button x:Name="CopyAddressButton" Content="Copy address" Padding="12,4" Margin="8,0,0,0" Click="CopyAddressClick"/>
                         <Button x:Name="SaveJsonButton" Content="Save offsets.json…" Padding="12,4" Margin="8,0,0,0" Click="SaveJsonClick"/>
-                        <Button x:Name="UpdateGhButton" Content="Update StaticPattern.cs…" Padding="12,4" Margin="8,0,0,0" Click="UpdateGameHelperClick"/>
+                        <Button x:Name="UpdateGhButton" Content="Update GameHelper patterns…" Padding="12,4" Margin="8,0,0,0" Click="UpdateGameHelperClick"/>
                         <CheckBox x:Name="VerboseCheck" Content="Verbose log" VerticalAlignment="Center" Margin="16,0,0,0"/>
                     </StackPanel>
 

@@ -134,8 +134,8 @@ namespace OffsetRecovery.Gui
 
             var dialog = new OpenFileDialog
             {
-                Title = "Select GameHelper2 StaticPattern.cs / StaticOffsetsPatterns.cs",
-                Filter = "C# source (*.cs)|*.cs|All files (*.*)|*.*",
+                Title = "Select GameHelper2 StaticOffsetsPatterns (.cs or .ahk)",
+                Filter = "GameHelper patterns (*.cs;*.ahk)|*.cs;*.ahk|All files (*.*)|*.*",
             };
             if (dialog.ShowDialog() != true)
             {
@@ -176,7 +176,7 @@ namespace OffsetRecovery.Gui
                 outcome.UpdatedCount, outcome.UnchangedCount, outcome.NotFoundCount,
                 Path.GetFileName(path), path);
 
-            MessageBoxResult answer = MessageBox.Show(this, summary, "Update StaticPattern.cs",
+            MessageBoxResult answer = MessageBox.Show(this, summary, "Update GameHelper patterns",
                 MessageBoxButton.YesNo,
                 outcome.NotFoundCount > 0 ? MessageBoxImage.Warning : MessageBoxImage.Question);
             if (answer != MessageBoxResult.Yes)

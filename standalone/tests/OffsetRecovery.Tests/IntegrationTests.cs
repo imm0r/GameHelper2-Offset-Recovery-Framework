@@ -65,6 +65,35 @@ namespace OffsetRecovery.Tests
             Assert.Equal("new Pattern(\"GameCullSize\", \"2B 05 ^ ?? ?? ?? ?? NEW\")", outcome.NewText);
         }
 
+        [Fact]
+        public void UpdatesAhkMapEntries()
+        {
+            const string old = "FF 05 ^ ?? ?? ?? ?? OLD";
+            const string neu = "FF 05 ^ ?? ?? ?? ?? 4D 8B 06";
+
+            string source =
+                "        return [\n" +
+                "            Map(\"name\", \"AreaChangeCounter\", \"pattern\", \"" + old + "\"),\n" +
+                "            Map(\"name\", \"GameCullSize\", \"pattern\", \"2B 05 ^ ?? ?? ?? ??\")\n" +
+                "        ]\n";
+
+            var successes = new List<RecoveryResult>
+            {
+                Result("AreaChangeCounter", neu),                  // changed -> Updated
+                Result("GameCullSize", "2B 05 ^ ?? ?? ?? ??"),      // identical -> Unchanged
+            };
+
+            PatchOutcome outcome = GameHelperPatcher.Patch(source, successes);
+
+            Assert.Equal(1, outcome.UpdatedCount);
+            Assert.Equal(1, outcome.UnchangedCount);
+            Assert.Contains("Map(\"name\", \"AreaChangeCounter\", \"pattern\", \"" + neu + "\")", outcome.NewText);
+            Assert.DoesNotContain("OLD", outcome.NewText);
+            // surrounding AHK syntax is preserved
+            Assert.Contains("        return [", outcome.NewText);
+            Assert.Contains("        ]", outcome.NewText);
+        }
+
         private static PatchEntry Find(PatchOutcome outcome, string name)
         {
             return outcome.Entries.Find(p => p.Name == name);
