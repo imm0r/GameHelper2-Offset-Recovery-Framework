@@ -44,6 +44,36 @@ Per offset the tool prints the anchor, resolved static address, a SigMaker-style
 confidence score, then a final summary — mirroring the Ghidra script. It also
 writes `offsets.json` in the working directory.
 
+## Self-check
+
+After recovery, every emitted result is cross-checked the way a runtime AOB
+scanner will consume it: read the 4-byte displacement at
+`matchAddress + bytesToSkip` and require
+`resolved == matchAddress + bytesToSkip + 4 + disp32`, plus that the pattern's
+fixed bytes occur at `patternStart` (`PatternSelfCheck.cs`). The run prints
+`Self-check: N / N patterns resolve to their static address`; a mismatch is
+flagged with `WARN` and means that offset's pattern is not safely consumable
+(e.g. a displacement field not flush with the instruction end).
+
+## Tests
+
+A small xUnit suite under `tests/OffsetRecovery.Tests` exercises the pipeline
+without the game binary, using a synthetic PE32+ built in memory
+(`TestPe.cs`: a `.text` with a few functions, a `.rdata` with strings, and a
+`.pdata` table — including a CALL target deliberately omitted from `.pdata` to
+exercise the sweep).
+
+```bash
+cd standalone
+dotnet test tests/OffsetRecovery.Tests
+```
+
+Coverage: PE32+ parsing and malformed-file rejection, `.pdata` function bounds,
+the CALL sweep, the XREF map and call graph, `InstructionIndex` navigation,
+string scanning and `AnchorSpec` matching, the `Insn` structural predicates,
+`SignatureMaker` uniqueness and `Pattern.Render`, the self-check, scoring,
+confidence labels, and JSON export.
+
 ## Mapping to the Java source
 
 | Standalone | Ghidra script (`OffsetRecoveryFramework.java`) |

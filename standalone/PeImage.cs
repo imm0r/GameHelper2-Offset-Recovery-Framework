@@ -51,6 +51,10 @@ namespace OffsetRecovery.Standalone
             }
 
             int peOffset = BitConverter.ToInt32(file, 0x3C);
+            if (peOffset < 0 || peOffset > file.Length - 64)
+            {
+                throw new InvalidDataException("Bad PE header offset.");
+            }
             if (file[peOffset] != 'P' || file[peOffset + 1] != 'E')
             {
                 throw new InvalidDataException("Missing PE signature.");
@@ -60,6 +64,10 @@ namespace OffsetRecovery.Standalone
             int numberOfSections = BitConverter.ToUInt16(file, coff + 2);
             int sizeOfOptionalHeader = BitConverter.ToUInt16(file, coff + 16);
             int opt = coff + 20;
+            if (opt + sizeOfOptionalHeader > file.Length)
+            {
+                throw new InvalidDataException("Truncated optional header.");
+            }
 
             ushort magic = BitConverter.ToUInt16(file, opt + 0);
             if (magic != 0x20B)
@@ -83,6 +91,10 @@ namespace OffsetRecovery.Standalone
             }
 
             int sectionTable = opt + sizeOfOptionalHeader;
+            if (numberOfSections < 0 || sectionTable + numberOfSections * 40 > file.Length)
+            {
+                throw new InvalidDataException("Truncated section table.");
+            }
             for (int i = 0; i < numberOfSections; i++)
             {
                 int entry = sectionTable + i * 40;

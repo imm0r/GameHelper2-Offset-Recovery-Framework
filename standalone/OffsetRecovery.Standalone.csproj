@@ -15,4 +15,9 @@
     <PackageReference Include="Iced" Version="1.21.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The test project lives under tests/; keep its sources out of this build. -->
+    <Compile Remove="tests/**/*.cs" />
+  </ItemGroup>
+
 </Project>

@@ -64,6 +64,7 @@ namespace OffsetRecovery.Standalone
                 Console.WriteLine();
             }
 
+            RunSelfChecks(image, successes);
             PrintSummary(successes, failures);
 
             string jsonPath = Path.Combine(Directory.GetCurrentDirectory(), "offsets.json");
@@ -140,6 +141,29 @@ namespace OffsetRecovery.Standalone
                 PrintList("Score reasons", result.Reasons);
                 PrintList("Validations", result.Validations);
             }
+        }
+
+        // Verify every emitted pattern actually resolves to its claimed static address,
+        // the way GameHelper2's runtime AOB scanner will. A mismatch means the JSON is
+        // not safely consumable, so surface it loudly without changing recipe results.
+        private static void RunSelfChecks(PeImage image, List<RecoveryResult> successes)
+        {
+            int consistent = 0;
+            foreach (RecoveryResult result in successes)
+            {
+                if (PatternSelfCheck.Verify(image, result, out string detail))
+                {
+                    result.Validations.Add("self-check: " + detail);
+                    consistent++;
+                }
+                else
+                {
+                    Console.WriteLine("WARN  " + result.OffsetName + " self-check failed: " + detail);
+                }
+            }
+            Console.WriteLine("Self-check: " + consistent + " / " + successes.Count
+                + " patterns resolve to their static address");
+            Console.WriteLine();
         }
 
         private static void PrintSummary(List<RecoveryResult> successes, List<string> failures)
