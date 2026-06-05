@@ -51,8 +51,10 @@ cd standalone
 dotnet build OffsetRecovery.sln -c Release   # build core + GUI + tests
 ```
 
-**GUI** — pick the executable, press *Recover*, read the table; *Copy pattern*,
-*Copy address*, or *Save offsets.json…*:
+**GUI** — two tabs. *Recovery*: pick the executable, press *Recover*, read the
+table, then *Copy pattern* / *Copy address* / *Save offsets.json…* / *Update
+StaticPattern.cs…*. *Diff*: load a previous `offsets.json` to compare against
+the current run.
 
 ```bash
 dotnet run -c Release --project gui/OffsetRecovery.Gui
@@ -78,6 +80,28 @@ needed to run it):
 ./publish-gui.ps1
 # -> gui/OffsetRecovery.Gui/bin/Release/net10.0-windows/win-x64/publish/OffsetRecovery.Gui.exe
 ```
+
+## GameHelper2 integration
+
+GameHelper2 stores its AOB signatures in `StaticOffsetsPatterns.cs` (some forks
+name it `StaticPattern.cs`) as `new Pattern("Name", "48 39 2D ^ ?? ?? ?? ?? …")`
+calls — the same offset names and the same `^`/`??` format this tool emits, so
+each recovered pattern maps one-to-one. The 2-argument constructor re-derives
+`BytesToSkip` from the `^` marker.
+
+*Update StaticPattern.cs…* (Recovery tab) picks that file and rewrites each
+matching `new Pattern(...)` with the freshly recovered signature
+(`GameHelperPatcher`). It reports per offset whether it was *updated*,
+*unchanged*, or *not found*, asks for confirmation, writes a `.bak` backup, then
+saves. Comments, layout, and unrelated entries are left untouched.
+
+## Diff (patch-day)
+
+The *Diff* tab loads a previous `offsets.json` and compares it against the
+current run (`OffsetDiff` / `OffsetsJson`). Each offset is classified
+`unchanged`, `address moved`, `pattern changed`, `new`, or `missing`, with a
+details pane showing the old vs new address, `BytesToSkip`, and pattern — so a
+patch-day review is one glance.
 
 ## Self-check
 
@@ -107,7 +131,8 @@ Coverage: PE32+ parsing and malformed-file rejection, `.pdata` function bounds,
 the CALL sweep, the XREF map and call graph, `InstructionIndex` navigation,
 string scanning and `AnchorSpec` matching, the `Insn` structural predicates,
 `SignatureMaker` uniqueness and `Pattern.Render`, the self-check, scoring,
-confidence labels, and JSON export.
+confidence labels, JSON export, the `GameHelperPatcher` rewrite, and the
+`OffsetsJson` / `OffsetDiff` comparison.
 
 ## Mapping to the Java source
 

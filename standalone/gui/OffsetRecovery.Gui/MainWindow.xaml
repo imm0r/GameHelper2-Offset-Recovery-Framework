@@ -1,7 +1,7 @@
 <Window x:Class="OffsetRecovery.Gui.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="GameHelper2 Offset Recovery" Height="660" Width="1040"
+        Title="GameHelper2 Offset Recovery" Height="720" Width="1100"
         WindowStartupLocation="CenterScreen">
     <DockPanel Margin="10">
 
@@ -23,34 +23,75 @@
                    Text="Choose a game executable and press Recover."/>
         <ProgressBar DockPanel.Dock="Top" x:Name="Progress" Height="4" IsIndeterminate="False" Margin="0,0,0,8"/>
 
-        <!-- Log -->
-        <GroupBox DockPanel.Dock="Bottom" Header="Log" Height="180" Margin="0,8,0,0">
-            <TextBox x:Name="LogBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto"
-                     HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"
-                     TextWrapping="NoWrap" Background="#1E1E1E" Foreground="#DDDDDD"/>
-        </GroupBox>
+        <TabControl>
 
-        <!-- Actions -->
-        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
-            <Button x:Name="CopyPatternButton" Content="Copy pattern" Padding="12,4" Click="CopyPatternClick"/>
-            <Button x:Name="CopyAddressButton" Content="Copy address" Padding="12,4" Margin="8,0,0,0" Click="CopyAddressClick"/>
-            <Button x:Name="SaveJsonButton" Content="Save offsets.json…" Padding="12,4" Margin="8,0,0,0" Click="SaveJsonClick"/>
-            <CheckBox x:Name="VerboseCheck" Content="Verbose log" VerticalAlignment="Center" Margin="16,0,0,0"/>
-        </StackPanel>
+            <!-- Recovery tab -->
+            <TabItem Header="Recovery">
+                <DockPanel Margin="6">
+                    <GroupBox DockPanel.Dock="Bottom" Header="Log" Height="160" Margin="0,8,0,0">
+                        <TextBox x:Name="LogBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto"
+                                 HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"
+                                 TextWrapping="NoWrap" Background="#1E1E1E" Foreground="#DDDDDD"/>
+                    </GroupBox>
 
-        <!-- Results -->
-        <DataGrid x:Name="ResultsGrid" AutoGenerateColumns="False" IsReadOnly="True"
-                  CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal"
-                  HeadersVisibility="Column" FontFamily="Consolas" FontSize="12">
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="Offset" Binding="{Binding Name}" Width="170"/>
-                <DataGridTextColumn Header="Resolved" Binding="{Binding ResolvedAddress}" Width="130"/>
-                <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence}" Width="110"/>
-                <DataGridTextColumn Header="Matches" Binding="{Binding Matches}" Width="70"/>
-                <DataGridTextColumn Header="Skip" Binding="{Binding BytesToSkip}" Width="50"/>
-                <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*"/>
-            </DataGrid.Columns>
-        </DataGrid>
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button x:Name="CopyPatternButton" Content="Copy pattern" Padding="12,4" Click="CopyPatternClick"/>
+                        <Button x:Name="CopyAddressButton" Content="Copy address" Padding="12,4" Margin="8,0,0,0" Click="CopyAddressClick"/>
+                        <Button x:Name="SaveJsonButton" Content="Save offsets.json…" Padding="12,4" Margin="8,0,0,0" Click="SaveJsonClick"/>
+                        <Button x:Name="UpdateGhButton" Content="Update StaticPattern.cs…" Padding="12,4" Margin="8,0,0,0" Click="UpdateGameHelperClick"/>
+                        <CheckBox x:Name="VerboseCheck" Content="Verbose log" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                    </StackPanel>
 
+                    <DataGrid x:Name="ResultsGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal"
+                              HeadersVisibility="Column" FontFamily="Consolas" FontSize="12">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Offset" Binding="{Binding Name}" Width="170"/>
+                            <DataGridTextColumn Header="Resolved" Binding="{Binding ResolvedAddress}" Width="130"/>
+                            <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence}" Width="110"/>
+                            <DataGridTextColumn Header="Matches" Binding="{Binding Matches}" Width="70"/>
+                            <DataGridTextColumn Header="Skip" Binding="{Binding BytesToSkip}" Width="50"/>
+                            <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- Diff tab -->
+            <TabItem Header="Diff">
+                <DockPanel Margin="6">
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" x:Name="LoadReferenceButton" Content="Load reference offsets.json…"
+                                Padding="12,4" Click="LoadReferenceClick"/>
+                        <TextBlock Grid.Column="1" x:Name="ReferencePathText" VerticalAlignment="Center"
+                                   Margin="10,0,0,0" Foreground="#555" Text="No reference loaded."
+                                   TextTrimming="CharacterEllipsis"/>
+                    </Grid>
+
+                    <GroupBox DockPanel.Dock="Bottom" Header="Details" Height="200" Margin="0,8,0,0">
+                        <TextBox x:Name="DiffDetails" IsReadOnly="True" VerticalScrollBarVisibility="Auto"
+                                 HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12"
+                                 TextWrapping="NoWrap"/>
+                    </GroupBox>
+
+                    <DataGrid x:Name="DiffGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal"
+                              HeadersVisibility="Column" FontFamily="Consolas" FontSize="12"
+                              SelectionChanged="DiffSelectionChanged">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Offset" Binding="{Binding Name}" Width="180"/>
+                            <DataGridTextColumn Header="Status" Binding="{Binding StatusText}" Width="130"/>
+                            <DataGridTextColumn Header="Old address" Binding="{Binding OldAddress}" Width="140"/>
+                            <DataGridTextColumn Header="New address" Binding="{Binding NewAddress}" Width="140"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+        </TabControl>
     </DockPanel>
 </Window>
