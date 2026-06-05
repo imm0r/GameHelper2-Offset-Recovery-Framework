@@ -210,7 +210,7 @@ namespace OffsetRecovery.Standalone
             {
                 return -1;
             }
-            return b0 | (b1 << 8) | (b2 << 16) | ((long)b3 << 24);
+            return (uint)b0 | ((uint)b1 << 8) | ((uint)b2 << 16) | ((uint)b3 << 24);
         }
     }
 }

@@ -210,7 +210,7 @@ namespace OffsetRecovery.Standalone
 
                 byte[] bytes = image.ReadBytes(fn.Begin, length);
                 var decoder = Decoder.Create(64, new ByteArrayCodeReader(bytes), fn.Begin);
-                while (decoder.CanDecode)
+                while (decoder.IP < fn.End)
                 {
                     Instruction instruction = decoder.Decode();
                     if (instruction.IsInvalid)
