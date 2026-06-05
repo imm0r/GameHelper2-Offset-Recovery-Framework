@@ -44,6 +44,26 @@ namespace OffsetRecovery.Standalone
             _functions = deduped.ToArray();
         }
 
+        // Combined table of .pdata functions plus functions discovered by the CALL sweep.
+        public FunctionTable(IReadOnlyList<PdataFunction> functions)
+        {
+            var list = new List<PdataFunction>(functions);
+            list.Sort((a, b) => a.Begin.CompareTo(b.Begin));
+
+            var deduped = new List<PdataFunction>();
+            ulong lastBegin = ulong.MaxValue;
+            foreach (PdataFunction fn in list)
+            {
+                if (fn.Begin != lastBegin)
+                {
+                    deduped.Add(fn);
+                    _entries.Add(fn.Begin);
+                    lastBegin = fn.Begin;
+                }
+            }
+            _functions = deduped.ToArray();
+        }
+
         public IReadOnlyList<PdataFunction> Functions => _functions;
 
         public PdataFunction Containing(ulong va)
@@ -184,44 +204,155 @@ namespace OffsetRecovery.Standalone
         public InstructionIndex Instructions { get; }
         public XrefMap Xrefs { get; }
 
-        private CodeModel(PeImage image, FunctionTable functions, InstructionIndex instructions, XrefMap xrefs)
+        public int SyntheticFunctionCount { get; }
+
+        private CodeModel(PeImage image, FunctionTable functions, InstructionIndex instructions, XrefMap xrefs,
+            int syntheticFunctionCount)
         {
             Image = image;
             Functions = functions;
             Instructions = instructions;
             Xrefs = xrefs;
+            SyntheticFunctionCount = syntheticFunctionCount;
         }
+
+        private const int SweepLimit = 200000;
+        private const int MaxSyntheticLength = 0x4000;
 
         public static CodeModel Build(PeImage image)
         {
-            var functions = new FunctionTable(image);
+            var pdata = new FunctionTable(image);
             var decoded = new List<Instruction>();
+            var decodedIps = new HashSet<ulong>();
             var xrefs = new XrefMap();
+            var entries = new HashSet<ulong>();
+            var functions = new List<PdataFunction>();
+            var worklist = new Queue<ulong>();
+            var queued = new HashSet<ulong>();
 
-            foreach (PdataFunction fn in functions.Functions)
+            // Phase 1: decode every function the .pdata exception table gives us.
+            foreach (PdataFunction fn in pdata.Functions)
             {
-                int length = (int)(fn.End - fn.Begin);
-                if (length <= 0 || length > 0x100000)
+                entries.Add(fn.Begin);
+                functions.Add(fn);
+            }
+            foreach (PdataFunction fn in pdata.Functions)
+            {
+                DecodeRange(image, fn.Begin, fn.End, decoded, decodedIps, xrefs, worklist, queued, entries);
+            }
+
+            // Phase 2: sweep CALL targets that .pdata never listed and decode them too.
+            int synthetic = 0;
+            while (worklist.Count > 0 && synthetic < SweepLimit)
+            {
+                ulong entry = worklist.Dequeue();
+                if (entries.Contains(entry) || decodedIps.Contains(entry) || !image.IsExecutable(entry))
                 {
                     continue;
                 }
 
-                byte[] bytes = image.ReadBytes(fn.Begin, length);
-                var decoder = Decoder.Create(64, new ByteArrayCodeReader(bytes), fn.Begin);
-                while (decoder.IP < fn.End)
+                ulong end = DecodeSynthetic(image, entry, decoded, decodedIps, xrefs, worklist, queued, entries, pdata);
+                if (end > entry)
                 {
-                    Instruction instruction = decoder.Decode();
-                    if (instruction.IsInvalid)
-                    {
-                        break;
-                    }
-                    decoded.Add(instruction);
-                    RecordReferences(instruction, xrefs);
+                    entries.Add(entry);
+                    functions.Add(new PdataFunction { Begin = entry, End = end });
+                    synthetic++;
                 }
             }
 
+            var table = new FunctionTable(functions);
             var index = new InstructionIndex(decoded);
-            return new CodeModel(image, functions, index, xrefs);
+            return new CodeModel(image, table, index, xrefs, synthetic);
+        }
+
+        // Decode a function with known [begin, end) bounds (the .pdata case).
+        private static void DecodeRange(PeImage image, ulong begin, ulong end,
+            List<Instruction> decoded, HashSet<ulong> decodedIps, XrefMap xrefs,
+            Queue<ulong> worklist, HashSet<ulong> queued, HashSet<ulong> entries)
+        {
+            int length = (int)(end - begin);
+            if (length <= 0 || length > 0x100000)
+            {
+                return;
+            }
+
+            byte[] bytes = image.ReadBytes(begin, length);
+            var decoder = Decoder.Create(64, new ByteArrayCodeReader(bytes), begin);
+            while (decoder.IP < end)
+            {
+                Instruction instruction = decoder.Decode();
+                if (instruction.IsInvalid)
+                {
+                    break;
+                }
+                if (decodedIps.Add(instruction.IP))
+                {
+                    decoded.Add(instruction);
+                    RecordReferences(instruction, xrefs);
+                    EnqueueCallTargets(instruction, image, worklist, queued, entries, decodedIps);
+                }
+            }
+        }
+
+        // Decode a function with unknown bounds (a CALL target absent from .pdata). We stop at
+        // the first top-level RET / tail JMP / padding once no forward branch reaches past it,
+        // or when we run into already-decoded code or another function entry.
+        private static ulong DecodeSynthetic(PeImage image, ulong entry,
+            List<Instruction> decoded, HashSet<ulong> decodedIps, XrefMap xrefs,
+            Queue<ulong> worklist, HashSet<ulong> queued, HashSet<ulong> entries, FunctionTable pdata)
+        {
+            byte[] bytes = image.ReadBytes(entry, MaxSyntheticLength);
+            var decoder = Decoder.Create(64, new ByteArrayCodeReader(bytes), entry);
+            ulong furthest = entry;
+            ulong end = entry;
+
+            while (decoder.IP < entry + (ulong)MaxSyntheticLength)
+            {
+                ulong ip = decoder.IP;
+                if (decodedIps.Contains(ip) || (ip != entry && pdata.IsEntry(ip)) || !image.IsExecutable(ip))
+                {
+                    break;
+                }
+
+                Instruction instruction = decoder.Decode();
+                if (instruction.IsInvalid)
+                {
+                    break;
+                }
+                if (instruction.Mnemonic == Mnemonic.Int3)
+                {
+                    if (decoder.IP > furthest)
+                    {
+                        break; // alignment padding past the last reachable branch: end of function
+                    }
+                    continue;  // padding between basic blocks while a forward branch still reaches ahead
+                }
+
+                decoded.Add(instruction);
+                decodedIps.Add(instruction.IP);
+                RecordReferences(instruction, xrefs);
+                EnqueueCallTargets(instruction, image, worklist, queued, entries, decodedIps);
+                end = instruction.IP + (ulong)instruction.Length;
+
+                if ((instruction.FlowControl == FlowControl.ConditionalBranch
+                        || instruction.FlowControl == FlowControl.UnconditionalBranch)
+                    && instruction.Op0Kind == OpKind.NearBranch64)
+                {
+                    ulong target = instruction.NearBranchTarget;
+                    if (target > instruction.IP && target < entry + (ulong)MaxSyntheticLength && target > furthest)
+                    {
+                        furthest = target;
+                    }
+                }
+
+                bool terminator = instruction.FlowControl == FlowControl.Return
+                    || instruction.FlowControl == FlowControl.UnconditionalBranch;
+                if (terminator && end > furthest)
+                {
+                    break;
+                }
+            }
+            return end;
         }
 
         private static void RecordReferences(Instruction instruction, XrefMap xrefs)
@@ -241,6 +372,26 @@ namespace OffsetRecovery.Standalone
                         xrefs.Add(instruction.NearBranchTarget, instruction.IP);
                     }
                     break;
+            }
+        }
+
+        // A direct CALL to an address with no known function is very likely a function entry
+        // missing from .pdata. Queue it for the sweep.
+        private static void EnqueueCallTargets(Instruction instruction, PeImage image,
+            Queue<ulong> worklist, HashSet<ulong> queued, HashSet<ulong> entries, HashSet<ulong> decodedIps)
+        {
+            if (instruction.FlowControl != FlowControl.Call || instruction.Op0Kind != OpKind.NearBranch64)
+            {
+                return;
+            }
+            ulong target = instruction.NearBranchTarget;
+            if (entries.Contains(target) || decodedIps.Contains(target) || !image.IsExecutable(target))
+            {
+                return;
+            }
+            if (queued.Add(target))
+            {
+                worklist.Enqueue(target);
             }
         }
 

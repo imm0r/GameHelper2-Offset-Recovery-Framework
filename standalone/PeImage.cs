@@ -192,6 +192,19 @@ namespace OffsetRecovery.Standalone
         public byte[] ReadBytes(ulong va, int length)
         {
             byte[] buffer = new byte[length];
+
+            // Fast path: the whole range lies inside one section's initialized bytes.
+            Section section = SectionForVa(va);
+            if (section != null)
+            {
+                ulong offset = va - section.VirtualStart;
+                if (offset < (ulong)section.Raw.Length && (ulong)section.Raw.Length - offset >= (ulong)length)
+                {
+                    Array.Copy(section.Raw, (int)offset, buffer, 0, length);
+                    return buffer;
+                }
+            }
+
             for (int i = 0; i < length; i++)
             {
                 int value = ReadByte(va + (ulong)i);

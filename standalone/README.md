@@ -58,10 +58,22 @@ writes `offsets.json` in the working directory.
 | `FunctionTable` | `getFunctionContaining` / `getFunctionAt` (via `.pdata`) |
 | `JsonExport` | Ghidra bookmarks / labels (`annotate`) |
 
+## Function discovery
+
+Function bounds come from the `.pdata` exception table first. A second **CALL
+sweep** (`CodeModel.Build` phase 2) then finds direct-call targets that `.pdata`
+never listed, decodes each with a bounded heuristic (stop at the first top-level
+`RET` / tail `JMP` / padding once no forward branch reaches past it), and folds
+them into the function table, instruction index, and XREF map. The startup line
+reports how many were recovered this way (`Functions: N (+M via CALL sweep)`),
+so recipe traversal and uniqueness checks see code even when a patched build
+ships an incomplete `.pdata`.
+
 ## Known simplifications
 
-- **Linear per-function decode.** Functions absent from `.pdata` (rare leaf
-  thunks) are not indexed. A CALL-target sweep would fill those in.
-- **Pattern uniqueness over `.pdata`-covered code.** The executable-memory match
-  count scans raw section bytes, same as Ghidra; recipe traversal only sees code
-  reachable through the function table.
+- **Indirect/jump-table targets** are not followed (no `NearBranch64`), so a
+  function reachable only through an indirect tail jump and never directly
+  called stays unindexed.
+- **Pattern uniqueness over decoded code.** The executable-memory match count
+  scans raw section bytes, same as Ghidra; recipe traversal sees code reachable
+  through the function table (now `.pdata` + CALL sweep).

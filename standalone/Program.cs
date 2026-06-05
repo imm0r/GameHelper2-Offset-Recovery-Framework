@@ -29,7 +29,8 @@ namespace OffsetRecovery.Standalone
             List<StringHit> strings = StringScanner.Scan(image);
             Console.WriteLine("Image base   : 0x" + image.ImageBase.ToString("x"));
             Console.WriteLine("pdata funcs  : " + image.RuntimeFunctions.Count);
-            Console.WriteLine("Functions    : " + model.Functions.Functions.Count);
+            Console.WriteLine("Functions    : " + model.Functions.Functions.Count
+                + " (+" + model.SyntheticFunctionCount + " via CALL sweep)");
             Console.WriteLine("Strings      : " + strings.Count);
             Console.WriteLine();
 
