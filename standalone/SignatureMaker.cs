@@ -6,20 +6,21 @@ using Iced.Intel;
 namespace OffsetRecovery.Standalone
 {
     // Builds a SigMaker-style byte pattern and proves it is unique in executable
-    // memory. This is a faithful port of the Ghidra script's ripPattern /
-    // makeUniquePattern / countExecutableMatches, minus the multi-start search
-    // (we extend forward from the match start only — noted in the README).
+    // memory. Faithful port of the Ghidra script's ripPattern / makeUniquePattern /
+    // makeBestUniquePattern / countExecutableMatches.
     public sealed class SignatureMaker
     {
         private const int MaxPatternBytes = 0x80;
 
         private readonly PeImage _image;
         private readonly InstructionIndex _index;
+        private readonly FunctionTable _functions;
 
         public SignatureMaker(CodeModel model)
         {
             _image = model.Image;
             _index = model.Instructions;
+            _functions = model.Functions;
         }
 
         public sealed class Pattern
@@ -27,6 +28,7 @@ namespace OffsetRecovery.Standalone
             public byte[] Bytes;
             public bool[] Mask;     // true = fixed byte, false = wildcard
             public int BytesToSkip; // offset of the resolved address inside the pattern
+            public ulong Start;     // VA the pattern begins at
             public int MatchCount;
 
             public int FixedCount
@@ -53,6 +55,83 @@ namespace OffsetRecovery.Standalone
                 }
                 return sb.ToString();
             }
+        }
+
+        // Try several start addresses (the match start, the target instruction, earlier
+        // instructions, the function entry) and keep the shortest unique pattern. This is
+        // what lets a match anchored at a function entry (terrain recipes) still produce a
+        // compact signature around the target instruction.
+        public Pattern MakeBestUnique(OffsetMatch match)
+        {
+            int minimumLength = match.PatternLength;
+            int originalInstructionOffset = (int)(match.InstructionAddress - match.MatchStart);
+            int displacementOffsetInInstruction = match.BytesToSkip - originalInstructionOffset;
+            int originalTailLength = minimumLength - originalInstructionOffset;
+
+            Pattern best = null;
+            foreach (ulong start in StartCandidates(match))
+            {
+                if (start > match.InstructionAddress)
+                {
+                    continue;
+                }
+
+                int instructionOffset = (int)(match.InstructionAddress - start);
+                int bytesToSkip = instructionOffset + displacementOffsetInInstruction;
+                int candidateMinimumLength = Math.Max(instructionOffset + originalTailLength, bytesToSkip + 4);
+                if (bytesToSkip < 0 || candidateMinimumLength > MaxPatternBytes)
+                {
+                    continue;
+                }
+
+                Pattern candidate = MakeUnique(start, candidateMinimumLength, bytesToSkip);
+                if (best == null || IsBetter(candidate, best))
+                {
+                    best = candidate;
+                }
+                if (candidate.MatchCount == 1 && candidate.Bytes.Length <= minimumLength)
+                {
+                    return candidate;
+                }
+            }
+
+            return best ?? MakeUnique(match.MatchStart, minimumLength, match.BytesToSkip);
+        }
+
+        private List<ulong> StartCandidates(OffsetMatch match)
+        {
+            var starts = new List<ulong>();
+            var seen = new HashSet<ulong>();
+
+            void Add(ulong address)
+            {
+                if (seen.Add(address))
+                {
+                    starts.Add(address);
+                }
+            }
+
+            Add(match.MatchStart);
+            Add(match.InstructionAddress);
+
+            PdataFunction function = _functions.Containing(match.InstructionAddress);
+            ulong cursor = match.InstructionAddress;
+            int count = 0;
+            while (count < 16
+                && _index.TryBefore(cursor, out Instruction previous)
+                && match.InstructionAddress - previous.IP <= 0x60
+                && (function == null || function.Contains(previous.IP)))
+            {
+                Add(previous.IP);
+                cursor = previous.IP;
+                count++;
+            }
+
+            if (function != null)
+            {
+                Add(function.Begin);
+            }
+            return starts;
         }
 
         // Extend the pattern instruction-by-instruction until it is unique.
@@ -96,7 +175,7 @@ namespace OffsetRecovery.Standalone
             Wildcard(mask, bytesToSkip, 4);
             MarkReferencedDisplacements(start, length, mask);
 
-            return new Pattern { Bytes = bytes, Mask = mask, BytesToSkip = bytesToSkip };
+            return new Pattern { Bytes = bytes, Mask = mask, BytesToSkip = bytesToSkip, Start = start };
         }
 
         private void MarkReferencedDisplacements(ulong start, int length, bool[] mask)

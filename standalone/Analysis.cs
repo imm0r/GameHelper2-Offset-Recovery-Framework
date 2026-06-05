@@ -97,11 +97,9 @@ namespace OffsetRecovery.Standalone
             }
         }
 
-        private int IndexOf(ulong va)
-        {
-            int idx = Array.BinarySearch(_ips, va);
-            return idx;
-        }
+        public IReadOnlyList<Instruction> All => _all;
+
+        private int IndexOf(ulong va) => Array.BinarySearch(_ips, va);
 
         public bool TryAt(ulong va, out Instruction instruction)
         {
@@ -248,6 +246,17 @@ namespace OffsetRecovery.Standalone
 
         public PdataFunction FunctionContaining(ulong va) => Functions.Containing(va);
 
+        // Instructions starting within [start, start + maxBytes], capped at the function end.
+        public IEnumerable<Instruction> InstructionsInWindow(PdataFunction function, ulong start, int maxBytes)
+        {
+            ulong end = start + (ulong)maxBytes + 1;
+            if (end > function.End)
+            {
+                end = function.End;
+            }
+            return Instructions.Range(start, end);
+        }
+
         // Direct CALLs to known function entries within [function, beforeAddress).
         public List<PdataFunction> DirectCallsBefore(PdataFunction function, ulong beforeAddress)
         {
@@ -272,6 +281,134 @@ namespace OffsetRecovery.Standalone
                 }
             }
             return result;
+        }
+
+        public List<PdataFunction> DirectCalls(PdataFunction function) => DirectCallsBefore(function, 0);
+
+        public List<PdataFunction> DirectCallsToDepth(PdataFunction root, int maxDepth)
+        {
+            var result = new List<PdataFunction>();
+            var seen = new HashSet<ulong>();
+            var frontier = new List<KeyValuePair<PdataFunction, int>> { new KeyValuePair<PdataFunction, int>(root, 0) };
+
+            for (int i = 0; i < frontier.Count; i++)
+            {
+                KeyValuePair<PdataFunction, int> current = frontier[i];
+                if (current.Value >= maxDepth)
+                {
+                    continue;
+                }
+                foreach (PdataFunction called in DirectCalls(current.Key))
+                {
+                    if (seen.Add(called.Begin))
+                    {
+                        result.Add(called);
+                        frontier.Add(new KeyValuePair<PdataFunction, int>(called, current.Value + 1));
+                    }
+                }
+            }
+            return result;
+        }
+
+        public int CallDepth(PdataFunction root, PdataFunction target, int maxDepth)
+        {
+            if (target == null)
+            {
+                return -1;
+            }
+            if (root.Begin == target.Begin)
+            {
+                return 0;
+            }
+
+            var seen = new HashSet<ulong>();
+            var frontier = new List<KeyValuePair<PdataFunction, int>> { new KeyValuePair<PdataFunction, int>(root, 0) };
+            for (int i = 0; i < frontier.Count; i++)
+            {
+                KeyValuePair<PdataFunction, int> current = frontier[i];
+                if (current.Value >= maxDepth)
+                {
+                    continue;
+                }
+                foreach (PdataFunction called in DirectCalls(current.Key))
+                {
+                    if (called.Begin == target.Begin)
+                    {
+                        return current.Value + 1;
+                    }
+                    if (seen.Add(called.Begin))
+                    {
+                        frontier.Add(new KeyValuePair<PdataFunction, int>(called, current.Value + 1));
+                    }
+                }
+            }
+            return -1;
+        }
+
+        public int CallerCount(PdataFunction function)
+        {
+            if (function == null)
+            {
+                return 0;
+            }
+            int count = 0;
+            foreach (ulong fromIp in Xrefs.To(function.Begin))
+            {
+                if (Instructions.TryAt(fromIp, out Instruction instruction) && instruction.FlowControl == FlowControl.Call)
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        public bool HasCallBefore(ulong address, int maxBytes)
+        {
+            PdataFunction function = FunctionContaining(address);
+            if (function == null)
+            {
+                return false;
+            }
+            foreach (Instruction instruction in Instructions.Range(function.Begin, address))
+            {
+                if (instruction.Mnemonic == Mnemonic.Call && address - instruction.IP <= (ulong)maxBytes)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public bool HasNearbyRet(ulong address, int maxBytes)
+        {
+            foreach (Instruction instruction in Instructions.Range(address, address + (ulong)maxBytes + 1))
+            {
+                if (instruction.FlowControl == FlowControl.Return)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public bool HasVectorZeroAfter(ulong address, int maxBytes)
+        {
+            if (!Instructions.TryAfter(address, out Instruction instruction))
+            {
+                return false;
+            }
+            while (instruction.IP - address <= (ulong)maxBytes)
+            {
+                if (Insn.IsVectorZero(instruction))
+                {
+                    return true;
+                }
+                if (!Instructions.TryAfter(instruction.IP, out instruction))
+                {
+                    break;
+                }
+            }
+            return false;
         }
     }
 }

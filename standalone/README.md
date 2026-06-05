@@ -1,12 +1,11 @@
-# Standalone (Ghidra-free) offset recovery — Proof of Concept
+# Standalone (Ghidra-free) offset recovery
 
-This folder is a **proof of concept** that the offset recovery logic does not
-need Ghidra. It re-implements the `Game States` recipe from
-`../OffsetRecoveryFramework.java` as a self-contained .NET console app that reads
-`PathOfExile.exe` directly.
+This folder re-implements `../OffsetRecoveryFramework.java` as a self-contained
+.NET console app that reads `PathOfExile.exe` directly — no Ghidra required.
 
-It exists to validate the architecture described to you in chat, not to replace
-the full framework yet — only one of the six recipes is ported.
+All six recipes are ported (`Game States`, `File Root`, `AreaChangeCounter`,
+`Terrain Rotator Helper`, `Terrain Rotation Selector`, `GameCullSize`). Results
+are printed to the console and written to a machine-readable `offsets.json`.
 
 ## Why this works without Ghidra
 
@@ -40,32 +39,29 @@ cd standalone
 dotnet run -c Release -- "C:\path\to\PathOfExile.exe" --verbose
 ```
 
-Expected output: the resolved static address for `Game States`, a SigMaker-style
+Per offset the tool prints the anchor, resolved static address, a SigMaker-style
 `Output pattern` that is unique in executable memory, `BytesToSkip`, and a
-confidence score — mirroring the Ghidra script's console output.
+confidence score, then a final summary — mirroring the Ghidra script. It also
+writes `offsets.json` in the working directory.
 
 ## Mapping to the Java source
 
 | Standalone | Ghidra script (`OffsetRecoveryFramework.java`) |
 |---|---|
-| `GameStatesRecipe.Recover` | `GameStatesRecipe.recoverCandidates` |
-| `FindStaticQwordNullCheck` | `findStaticQwordNullCheck` / `isStaticQwordNullCheck` |
-| `CodeModel.DirectCallsBefore` | `directCallsBefore` |
-| `SignatureMaker.MakeUnique` | `makeUniquePattern` |
+| `*Recipe.Recover` | `*Recipe.recoverCandidates` |
+| `Insn.*` predicates | `isStatic*` / instruction-text checks |
+| `CodeModel.DirectCallsBefore` / `DirectCallsToDepth` / `CallDepth` | `directCallsBefore` / `directCallsToDepth` / `callDepth` |
+| `SignatureMaker.MakeBestUnique` / `MakeUnique` | `makeBestUniquePattern` / `makeUniquePattern` |
 | `SignatureMaker.Build` | `ripPattern` / `markReferencedDisplacements` |
 | `SignatureMaker.CountExecutableMatches` | `countExecutableMatches` |
 | `XrefMap` | `getReferencesTo` / `getReferencesFrom` |
 | `FunctionTable` | `getFunctionContaining` / `getFunctionAt` (via `.pdata`) |
+| `JsonExport` | Ghidra bookmarks / labels (`annotate`) |
 
-## Known simplifications (PoC scope)
+## Known simplifications
 
-These are deliberate cuts, not blockers — each is a known, bounded extension:
-
-- **One recipe only** (`Game States`). The other five port the same way.
-- **SigMaker single-start.** The Java `makeBestUniquePattern` also tries earlier
-  start addresses to find a shorter/byte-richer pattern; here we only extend
-  forward from the match. Enough to prove uniqueness.
 - **Linear per-function decode.** Functions absent from `.pdata` (rare leaf
   thunks) are not indexed. A CALL-target sweep would fill those in.
-- **No Ghidra annotations.** Bookmarks/labels were a Ghidra-DB feature; output
-  is console-only. A JSON or `.csv` emitter would be the production replacement.
+- **Pattern uniqueness over `.pdata`-covered code.** The executable-memory match
+  count scans raw section bytes, same as Ghidra; recipe traversal only sees code
+  reachable through the function table.
