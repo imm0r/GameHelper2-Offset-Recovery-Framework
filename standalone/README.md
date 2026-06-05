@@ -1,11 +1,23 @@
 # Standalone (Ghidra-free) offset recovery
 
-This folder re-implements `../OffsetRecoveryFramework.java` as a self-contained
-.NET console app that reads `PathOfExile.exe` directly — no Ghidra required.
+This folder re-implements `../OffsetRecoveryFramework.java` in .NET, reading
+`PathOfExile.exe` directly — no Ghidra required. It ships two front-ends over a
+shared core (`RecoveryRunner`): a **CLI** (`OffsetRecovery.Standalone`) and a
+**WPF GUI** (`OffsetRecovery.Gui`).
 
 All six recipes are ported (`Game States`, `File Root`, `AreaChangeCounter`,
 `Terrain Rotator Helper`, `Terrain Rotation Selector`, `GameCullSize`). Results
-are printed to the console and written to a machine-readable `offsets.json`.
+are shown in the UI / console and written to a machine-readable `offsets.json`.
+
+## Projects
+
+| Project | What it is |
+|---|---|
+| `OffsetRecovery.Standalone` | Core logic + CLI (`RecoveryRunner` does the work) |
+| `gui/OffsetRecovery.Gui` | WPF desktop front-end (`net10.0-windows`, references the core) |
+| `tests/OffsetRecovery.Tests` | xUnit suite |
+
+`OffsetRecovery.sln` ties all three together.
 
 ## Why this works without Ghidra
 
@@ -32,17 +44,40 @@ match on decoded structure (mnemonic, operand kinds, registers, memory size).
 ## Build & run
 
 Requires the .NET **SDK** (10.0+; the runtime alone cannot build) and network
-access to restore the `Iced` NuGet package.
+access to restore NuGet packages on first build. The GUI builds on Windows.
 
 ```bash
 cd standalone
-dotnet run -c Release -- "C:\path\to\PathOfExile.exe" --verbose
+dotnet build OffsetRecovery.sln -c Release   # build core + GUI + tests
 ```
 
-Per offset the tool prints the anchor, resolved static address, a SigMaker-style
-`Output pattern` that is unique in executable memory, `BytesToSkip`, and a
-confidence score, then a final summary — mirroring the Ghidra script. It also
-writes `offsets.json` in the working directory.
+**GUI** — pick the executable, press *Recover*, read the table; *Copy pattern*,
+*Copy address*, or *Save offsets.json…*:
+
+```bash
+dotnet run -c Release --project gui/OffsetRecovery.Gui
+```
+
+**CLI** — same recovery, console output, writes `offsets.json` to the working
+directory:
+
+```bash
+dotnet run -c Release --project OffsetRecovery.Standalone -- "C:\path\to\PathOfExile.exe" --verbose
+```
+
+Per offset both front-ends report the resolved static address, a SigMaker-style
+pattern that is unique in executable memory, `BytesToSkip`, and a confidence
+score — mirroring the Ghidra script.
+
+### One-file build
+
+Produce a single self-contained `OffsetRecovery.Gui.exe` (no .NET install
+needed to run it):
+
+```powershell
+./publish-gui.ps1
+# -> gui/OffsetRecovery.Gui/bin/Release/net10.0-windows/win-x64/publish/OffsetRecovery.Gui.exe
+```
 
 ## Self-check
 

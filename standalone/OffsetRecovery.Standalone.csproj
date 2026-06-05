@@ -16,8 +16,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The test project lives under tests/; keep its sources out of this build. -->
+    <!-- The test and GUI projects live in subfolders; keep their sources out of this build. -->
     <Compile Remove="tests/**/*.cs" />
+    <Compile Remove="gui/**/*.cs" />
   </ItemGroup>
 
 </Project>
