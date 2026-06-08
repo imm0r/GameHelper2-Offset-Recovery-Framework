@@ -1,18 +1,18 @@
-# GameHelper2 Offset Recovery Framework
+# PoEformance - Pattern-Voodoo
 
 This folder contains Ghidra-only helpers for recovering static offsets after game updates.
 
 ## How to run
 
 1. Open game `*.exe` in Ghidra and let analysis finish.
-2. Add this `GameHelper2 Offset Recovery Framework` folder as a Script Manager directory.
-3. Run `OffsetRecoveryFramework.java`.
+2. Add this folder as a Ghidra Script Manager directory.
+3. Run `PoEformance.java`.
 
 Validated with Ghidra 12.1. Keep archived or comparison copies outside this script folder, or give them a non-`.java` extension, because Ghidra compiles every Java file in the bundle.
 
 The script prints the best candidate for each offset, confidence, unique output pattern data, and a final summary. High-confidence results also receive bookmarks and labels in the Ghidra database.
 
-Set `VERBOSE = true` in `OffsetRecoveryFramework.java` to print score reasons and validation notes while debugging recipes.
+Set `VERBOSE = true` in `PoEformance.java` to print score reasons and validation notes while debugging recipes.
 
 ## Current offsets
 
